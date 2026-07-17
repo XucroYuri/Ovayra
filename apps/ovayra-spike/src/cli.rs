@@ -214,6 +214,13 @@ pub(crate) enum ReleaseCommand {
         #[arg(long)]
         installed_version: String,
     },
+    /// Verify one already-signed native artifact before it may be inspected or uploaded.
+    VerifyArtifact {
+        #[arg(long)]
+        package: PathBuf,
+        #[arg(long, env = "OVAYRA_UPDATE_PUBLIC_KEY")]
+        public_key: PathBuf,
+    },
 }
 
 fn parse_hardware_backend(input: &str) -> Result<Backend, String> {
@@ -313,6 +320,23 @@ mod tests {
             .unwrap();
             assert!(matches!(cli.command, Command::Release { .. }));
         }
+
+        let artifact = Cli::try_parse_from([
+            "ovayra-spike",
+            "release",
+            "verify-artifact",
+            "--package",
+            "release.AppImage",
+            "--public-key",
+            "update.pub",
+        ])
+        .unwrap();
+        assert!(matches!(
+            artifact.command,
+            Command::Release {
+                command: ReleaseCommand::VerifyArtifact { .. }
+            }
+        ));
     }
 
     #[test]

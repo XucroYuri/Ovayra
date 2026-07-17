@@ -38,6 +38,23 @@ pub enum PackageError {
 pub struct PackageRelease;
 
 impl PackageRelease {
+    /// Verifies one native artifact against its mandatory detached Minisign sidecar and the pinned
+    /// Phase 0 public key.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a missing, malformed, substituted, or invalid detached signature.
+    pub fn verify_artifact(package: &Path, public_key: &str) -> Result<(), PackageError> {
+        let name = package
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| policy("package name is not UTF-8"))?;
+        let bytes = read_regular_bounded(package, MAX_PACKAGE_BYTES)?;
+        let signature = read_signature_for(package, name)?;
+        ReleaseVerifier::new(public_key)?.verify(&bytes, &signature)?;
+        Ok(())
+    }
+
     /// Generates `latest.json` atomically and writes `.deb`/`.dmg` download metadata separately.
     ///
     /// # Errors

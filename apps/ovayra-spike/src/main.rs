@@ -205,6 +205,19 @@ fn main() -> Result<()> {
                     installed_version,
                 },
         } => verify_package_manifest(&manifest, &packages, &public_key, &installed_version, true)?,
+        Command::Release {
+            command:
+                ReleaseCommand::VerifyArtifact {
+                    package,
+                    public_key,
+                },
+        } => {
+            let public_key =
+                fs::read_to_string(public_key).context("cannot read update public key")?;
+            PackageRelease::verify_artifact(&package, &public_key)
+                .context("native artifact signature verification failed")?;
+            println!("ARTIFACT_SIGNATURE=PASS");
+        }
     }
     Ok(())
 }

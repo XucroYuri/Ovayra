@@ -98,6 +98,31 @@ fn one_byte_package_signature_key_or_hash_tampering_is_rejected() {
 }
 
 #[test]
+fn standalone_native_artifact_verification_requires_the_pinned_sidecar() {
+    let package_dir = tempfile::tempdir().unwrap();
+    let package = package_dir
+        .path()
+        .join("ovayra-phase-0_0.0.2_linux-x86_64.AppImage");
+    fs::copy("tests/fixtures/update-test.bin", &package).unwrap();
+    fs::copy(
+        "tests/fixtures/update-test.bin.minisig",
+        package_dir
+            .path()
+            .join("ovayra-phase-0_0.0.2_linux-x86_64.AppImage.minisig"),
+    )
+    .unwrap();
+    let public_key = fs::read_to_string("../../packaging/update.pub").unwrap();
+    PackageRelease::verify_artifact(&package, &public_key).unwrap();
+    fs::remove_file(
+        package_dir
+            .path()
+            .join("ovayra-phase-0_0.0.2_linux-x86_64.AppImage.minisig"),
+    )
+    .unwrap();
+    assert!(PackageRelease::verify_artifact(&package, &public_key).is_err());
+}
+
+#[test]
 fn package_manifest_uses_only_signed_updater_artifacts_and_keeps_deb_downloads_separate() {
     let packages = tempfile::tempdir().unwrap();
     let output = tempfile::tempdir().unwrap();

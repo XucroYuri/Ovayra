@@ -73,3 +73,28 @@ the pinned verifier fails. Both updater and installer-download metadata bind
 length, SHA-256, and a detached signature, and the corruption check exercises
 each payload class. A key-rotation ADR and a separately provisioned production
 key are required before any commercial release claim.
+
+## Signing-key status and release gate
+
+The current anchor is deliberately the copied test-fixture public key. No
+matching private key is stored in this workspace, and this task has no evidence
+that such a private key is available to the protected environment. Therefore
+protected signing with the current anchor is intentionally *not* a release PASS:
+the post-sign `verify-artifact` gate rejects any signer whose public key does
+not equal the embedded anchor, before inspection/upload/publishing. Before a
+commercial or production release, an authorized external key ceremony must
+provision a new Phase 0 private key only in the protected environment, commit
+its corresponding public anchor and reviewed SHA/key-ID, and then demonstrate
+the same gates. No private key was generated or persisted locally.
+
+## Extracted-artifact inspection
+
+The release workflow now validates the final signed app/DMG, MSI, AppImage, and
+deb through extraction rather than filename presence. It requires one resource
+root and nonempty regular (not symlink) application, FFmpeg binaries, notices,
+licenses, provenance sources/attestation/lock/build data/checksums, and SBOM;
+NV codec material is required on the Windows/Linux targets. The DMG is mounted
+read-only/no-browse with a cleanup trap, MSI uses a fresh administrative extract
+with an exit-code/log gate, and AppImage/deb use native extraction. Fixture
+tests cover valid, missing, and symlinked trees; producer-event fixtures cover
+PR, branch, repository, workflow, SHA, and tag rejection.

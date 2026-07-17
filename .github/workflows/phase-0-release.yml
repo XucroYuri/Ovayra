@@ -38,39 +38,42 @@ jobs:
   package-native:
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/phase-0-v')) ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'phase-0-v')) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'phase-0-v') && inputs.producer_run_id != '')
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { id: macos-arm64-vt, runner: macos-14, triple: aarch64-apple-darwin, formats: app,dmg, inspect: 'test -d target/phase-0/packages/*.app && test -f target/phase-0/packages/*.dmg' }
-          - { id: windows-x64-mf, runner: windows-2025, triple: x86_64-pc-windows-msvc, formats: wix, inspect: 'if (-not (Test-Path target/phase-0/packages/*.msi)) { throw "missing MSI" }' }
-          - { id: linux-x64-vaapi-wayland, runner: ubuntu-24.04, triple: x86_64-unknown-linux-gnu, formats: appimage,deb, inspect: 'test -f target/phase-0/packages/*.AppImage && test -f target/phase-0/packages/*.deb' }
+          - { id: macos-arm64-vt, runner: macos-14, triple: aarch64-apple-darwin, formats: app,dmg }
+          - { id: windows-x64-mf, runner: windows-2025, triple: x86_64-pc-windows-msvc, formats: wix }
+          - { id: linux-x64-vaapi-wayland, runner: ubuntu-24.04, triple: x86_64-unknown-linux-gnu, formats: appimage,deb }
     runs-on: ${{ matrix.runner }}
     environment: phase-0-package
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event_name == 'workflow_dispatch' && inputs.release_tag || github.sha }}
+          fetch-depth: 0
       - name: Download the validated Task 10 bundle artifact
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
           REQUESTED_RUN_ID: ${{ inputs.producer_run_id }}
-          RELEASE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
-          case "$RELEASE_TAG" in phase-0-v*) ;; *) echo 'release must use a phase-0-v* tag' >&2; exit 1;; esac
           CHECKED_OUT_SHA="$(git rev-parse HEAD)"
-          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$CHECKED_OUT_SHA" || { echo 'release tag does not resolve to checkout' >&2; exit 1; }
           if [ "$EVENT_NAME" = workflow_run ]; then
             RUN_ID="$WORKFLOW_RUN_ID"
+            RELEASE_TAG="$(git tag --points-at "$CHECKED_OUT_SHA" | rg '^phase-0-v' | head -n 1 || true)"
+            test -n "$RELEASE_TAG" || { echo 'workflow run SHA has no phase-0-v* tag' >&2; exit 1; }
           elif [ "$EVENT_NAME" = workflow_dispatch ]; then
             RUN_ID="$REQUESTED_RUN_ID"
+            RELEASE_TAG="$REQUESTED_TAG"
           else
+            RELEASE_TAG="$REQUESTED_TAG"
             RUN_ID=''
             for attempt in $(seq 1 60); do
               candidate=$(gh run list --workflow phase-0-ffmpeg.yml --commit "$CHECKED_OUT_SHA" --status success --json databaseId,headSha,event,conclusion --jq '.[] | select(.headSha == "'"$CHECKED_OUT_SHA"' and .event == "push" and .conclusion == "success") | .databaseId' | head -n 1 || true)
@@ -79,11 +82,15 @@ jobs:
             done
             test -n "$RUN_ID" || { echo "no successful Task 10 producer for $CHECKED_OUT_SHA" >&2; exit 1; }
           fi
+          case "$RELEASE_TAG" in phase-0-v*) ;; *) echo 'release must use a phase-0-v* tag' >&2; exit 1;; esac
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$CHECKED_OUT_SHA" || { echo 'producer tag does not match workflow run' >&2; exit 1; }
+          release_version="${RELEASE_TAG#phase-0-v}"
+          workspace_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' packaging/Packager.toml | head -n 1)"
+          test "$release_version" = "$workspace_version" || { echo 'release version does not match tag' >&2; exit 1; }
           producer="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID")"
-          test "$(jq -r '.conclusion' <<<"$producer")" = success || { echo 'producer did not conclude successfully' >&2; exit 1; }
-          test "$(jq -r '.event' <<<"$producer")" = push || { echo 'producer was not a push-triggered run' >&2; exit 1; }
-          test "$(jq -r '.head_sha' <<<"$producer")" = "$CHECKED_OUT_SHA" || { echo 'producer SHA does not match checkout' >&2; exit 1; }
-          test "$(jq -r '.name' <<<"$producer")" = phase-0-ffmpeg || { echo 'producer is not phase-0-ffmpeg' >&2; exit 1; }
+          producer_event="$(mktemp)"; trap 'rm -f "$producer_event"' EXIT
+          printf '%s' "$producer" > "$producer_event"
+          scripts/validate-release-producer-event.sh --event "$producer_event" --repository "$GITHUB_REPOSITORY" --sha "$CHECKED_OUT_SHA" --tag "$RELEASE_TAG"
           gh run download "$RUN_ID" --name "ffmpeg-${{ matrix.id }}-bundle" --dir target/ffmpeg-artifact
           test -d target/ffmpeg-artifact
       - name: Install exact cargo-packager
@@ -96,9 +103,6 @@ jobs:
         run: cargo run --locked -p ovayra-spike -- release prepare-package --bundle "$OVAYRA_FFMPEG_BUNDLE" --target "$OVAYRA_TARGET_TRIPLE"
       - name: Build unsigned native package
         run: cargo packager --release --config packaging/Packager.toml --formats ${{ matrix.formats }}
-      - name: Inspect expected native package contents
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
-        run: ${{ matrix.inspect }}
       - name: Protected macOS code sign, notarize, staple, and normalize updater payload
         if: runner.os == 'macOS'
         env:
@@ -120,11 +124,15 @@ jobs:
           codesign --force --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
           xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
           xcrun stapler staple "$app"; xcrun stapler staple "$dmg"; codesign --verify --deep --strict --verbose=2 "$app"; spctl --assess --type execute --verbose=4 "$app"; xcrun stapler validate "$dmg"
-          mount_point=$(hdiutil attach -nobrowse -readonly "$dmg" | awk '/\/Volumes\// {print $3; exit}'); test -n "$mount_point"; mounted_app=$(find "$mount_point" -maxdepth 1 -type d -name '*.app' -print -quit); test -n "$mounted_app"; codesign --verify --deep --strict --verbose=2 "$mounted_app"; test -f "$mounted_app/Contents/Resources/ffmpeg/bin/ffmpeg"; test -f "$mounted_app/Contents/Resources/ffmpeg/bin/ffprobe"; test -f "$mounted_app/Contents/Resources/NOTICE.txt"; hdiutil detach "$mount_point"
+          scripts/inspect-native-package.sh --kind app --artifact "$app"
+          scripts/inspect-native-package.sh --kind dmg --artifact "$dmg"
           mkdir -p target/phase-0/release-artifacts
           COPYFILE_DISABLE=1 tar --format=ustar --uid 0 --gid 0 --numeric-owner -czf target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.app.tar.gz -C "$(dirname "$app")" "$(basename "$app")"
           cp "$dmg" target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.dmg
           cargo packager signer sign --private-key "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.app.tar.gz
+          cargo packager signer sign --private-key "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.dmg
+          cargo run --locked -p ovayra-spike -- release verify-artifact --package target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.app.tar.gz --public-key packaging/update.pub
+          cargo run --locked -p ovayra-spike -- release verify-artifact --package target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.dmg --public-key packaging/update.pub
       - name: Protected Windows Authenticode sign, verify, and normalize updater payload
         if: runner.os == 'Windows'
         env:
@@ -139,8 +147,10 @@ jobs:
           $msi = Get-ChildItem target/phase-0/packages -Filter *.msi | Select-Object -First 1; if ($null -eq $msi) { throw 'missing MSI' }
           signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /sha1 $certificate.Thumbprint $msi.FullName; signtool verify /pa /all $msi.FullName
           if ((Get-AuthenticodeSignature $msi.FullName).Status -ne 'Valid') { throw 'MSI Authenticode verification failed' }
+          & scripts/inspect-native-package.ps1 -Kind msi -Artifact $msi.FullName -RequireNv
           New-Item -ItemType Directory -Force target/phase-0/release-artifacts | Out-Null; $normalized = 'target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_windows-x86_64.msi'; Copy-Item $msi.FullName $normalized
           cargo packager signer sign --private-key $env:CARGO_PACKAGER_SIGN_PRIVATE_KEY $normalized
+          cargo run --locked -p ovayra-spike -- release verify-artifact --package $normalized --public-key packaging/update.pub
       - name: Protected Linux Minisign sign and normalize AppImage and deb
         if: runner.os == 'Linux'
         env:
@@ -154,6 +164,10 @@ jobs:
           cp "$appimage" target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.AppImage; cp "$deb" target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.deb
           cargo packager signer sign --private-key "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.AppImage
           cargo packager signer sign --private-key "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.deb
+          cargo run --locked -p ovayra-spike -- release verify-artifact --package target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.AppImage --public-key packaging/update.pub
+          cargo run --locked -p ovayra-spike -- release verify-artifact --package target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.deb --public-key packaging/update.pub
+          scripts/inspect-native-package.sh --kind appimage --artifact target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.AppImage --require-nv
+          scripts/inspect-native-package.sh --kind deb --artifact target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.deb --require-nv
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: phase-0-${{ matrix.id }}-unsigned
