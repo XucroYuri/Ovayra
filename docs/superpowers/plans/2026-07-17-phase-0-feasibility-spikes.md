@@ -453,7 +453,7 @@ impl Evidence {
 
 Do not derive `Serialize` or `Deserialize` for `Evidence`: its only public write/read paths are validated `to_pretty_json` and `from_json`. Expose only read-only accessors. `TargetId` implements validated serde serialization/deserialization and has a public `TargetIdError`.
 
-Re-export the types from `lib.rs`. Add `RequiredEvidence { id, target, session, backend }` and a TOML `PhaseZeroMatrix` loader in `matrix.rs`. `validate_required_verdict` takes a concrete `RequiredEvidence`, rejects an entry absent from the matrix, and accepts only `Pass` for a present entry.
+Re-export the types from `lib.rs`. Add `RequiredEvidence { id, target, session, backend }` and a TOML `PhaseZeroMatrix` loader in `matrix.rs`. The loader must compare the parsed entries as a deterministic set against the canonical 33-entry supported matrix: report missing required entries separately from unsupported/invented combinations, after rejecting duplicate, unknown-field, empty-qualifier, and unsupported-target input. `validate_required_verdict` takes a concrete `RequiredEvidence`, rejects an entry absent from the matrix, and accepts only `Pass` for a present entry.
 
 - [ ] **Step 4: Encode the complete required matrix**
 

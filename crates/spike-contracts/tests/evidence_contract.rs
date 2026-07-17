@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use spike_contracts::{
     Evidence, EvidenceError, MatrixError, PhaseZeroMatrix, RequiredEvidence, SpikeId, TargetId,
     Verdict,
@@ -99,22 +101,13 @@ fn target_id_rejects_unsupported_values_in_construction_and_deserialization() {
 
 #[test]
 fn parses_required_evidence_with_optional_qualifiers() {
-    let matrix = PhaseZeroMatrix::from_toml(
-        r#"
-            [[required]]
-            id = "preview"
-            target = "macos-arm64-vt"
-            session = "aqua"
-
-            [[required]]
-            id = "media"
-            target = "linux-x64-vaapi-wayland"
-            backend = "vaapi"
-        "#,
+    let matrix = PhaseZeroMatrix::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packaging/phase-0-matrix.toml"),
     )
     .unwrap();
 
-    assert_eq!(matrix.required.len(), 2);
+    assert_eq!(matrix.required.len(), 33);
     assert!(matrix.required.contains(&required(
         SpikeId::Preview,
         "macos-arm64-vt",
@@ -150,15 +143,59 @@ target = "linux-arm64""#,
 }
 
 #[test]
-fn required_evidence_validation_requires_a_matching_passing_entry() {
-    let matrix = PhaseZeroMatrix::from_toml(
+fn matrix_rejects_a_structurally_valid_reduced_set() {
+    let error = PhaseZeroMatrix::from_toml(
         r#"[[required]]
-id = "gemini"
-target = "windows-x64-mf""#,
+id = "preview"
+target = "macos-arm64-vt"
+session = "aqua""#,
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, MatrixError::MissingRequiredEntries(_)));
+}
+
+#[test]
+fn matrix_rejects_an_invented_combination_for_a_valid_target() {
+    let matrix = PhaseZeroMatrix::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packaging/phase-0-matrix.toml"),
+    )
+    .unwrap();
+    let mut rendered = String::new();
+    for entry in matrix.required {
+        writeln!(rendered, "[[required]]").unwrap();
+        writeln!(
+            rendered,
+            "id = \"{}\"",
+            format!("{:?}", entry.id).to_lowercase()
+        )
+        .unwrap();
+        writeln!(rendered, "target = \"{}\"", entry.target.as_str()).unwrap();
+        if let Some(session) = entry.session {
+            writeln!(rendered, "session = \"{session}\"").unwrap();
+        }
+        if let Some(backend) = entry.backend {
+            writeln!(rendered, "backend = \"{backend}\"").unwrap();
+        }
+    }
+    rendered.push_str(
+        "[[required]]\nid = \"gemini\"\ntarget = \"macos-arm64-vt\"\nbackend = \"vaapi\"\n",
+    );
+
+    let error = PhaseZeroMatrix::from_toml(&rendered).unwrap_err();
+    assert!(matches!(error, MatrixError::UnsupportedRequiredEntries(_)));
+}
+
+#[test]
+fn required_evidence_validation_requires_a_matching_passing_entry() {
+    let matrix = PhaseZeroMatrix::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packaging/phase-0-matrix.toml"),
     )
     .unwrap();
     let present = required(SpikeId::Gemini, "windows-x64-mf", None, None);
-    let absent = required(SpikeId::Gemini, "macos-arm64-vt", None, None);
+    let absent = required(SpikeId::Gemini, "macos-arm64-vt", None, Some("vaapi"));
 
     assert!(
         matrix
