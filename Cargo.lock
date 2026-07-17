@@ -4049,6 +4049,7 @@ dependencies = [
  "spike-media",
  "spike-platform",
  "spike-release",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

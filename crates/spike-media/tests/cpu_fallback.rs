@@ -112,3 +112,116 @@ fn average_speed_uses_progress_events_and_evidence_values_are_redacted() {
     );
     assert!(spike_media::redacted_process_detail("/private/path\nstderr detail").is_none());
 }
+
+#[test]
+fn rejects_a_zero_requested_duration_before_spawning() {
+    let error = CpuFallback::new("not-a-real-ffmpeg", "not-a-real-ffprobe")
+        .generate_synthetic(Path::new("unused.webm"), 0)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        spike_media::CpuFallbackError::InvalidRequestedDuration
+    ));
+}
+
+#[cfg(unix)]
+mod child_processes {
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::{Path, PathBuf},
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+
+    use spike_media::{CpuFallback, CpuFallbackError, FfprobeReport};
+
+    fn fake_executable(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    #[test]
+    fn controlled_child_collects_exact_arguments_and_drains_flooded_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let captured = dir.path().join("arguments.txt");
+        let script = format!(
+            r#"
+if [ "$1" = "-version" ]; then echo "ffmpeg version bounded-test"; exit 0; fi
+if [ "$1" = "-v" ]; then
+  printf '%s' '{{"format":{{"format_name":"matroska,webm","duration":"2"}},"streams":[{{"codec_name":"vp9","codec_type":"video","pix_fmt":"yuv420p"}},{{"codec_name":"opus","codec_type":"audio"}}]}}'
+  yes x | head -c 131072 >&2
+  exit 0
+fi
+printf '%s\n' "$@" > '{}'
+yes x | head -c 131072 >&2
+last=''; for argument in "$@"; do last="$argument"; done
+printf synthetic > "$last"
+printf 'speed=1.0x\nprogress=end\n'
+"#,
+            captured.display()
+        );
+        let fake = fake_executable(dir.path(), "fake-media", &script);
+        let output = dir.path().join("fallback.webm");
+        let fallback = CpuFallback::new(&fake, &fake);
+        let generated = fallback.generate_synthetic(&output, 3).unwrap();
+        assert_eq!(generated.average_speed, Some(1.0));
+        assert_eq!(generated.ffmpeg_build_id, "ffmpeg version bounded-test");
+        assert_eq!(
+            fs::read_to_string(captured)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            fallback
+                .ffmpeg_arguments(&output, 3)
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        );
+        let report = FfprobeReport::read(&fake, &output).unwrap();
+        assert_eq!(report.video_codec.as_deref(), Some("vp9"));
+    }
+
+    #[test]
+    fn controlled_child_failure_and_timeout_are_redacted_and_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let failure = fake_executable(
+            dir.path(),
+            "failure",
+            "echo '/private/raw-stderr' >&2; exit 7",
+        );
+        let error = CpuFallback::new(&failure, &failure)
+            .generate_synthetic(&dir.path().join("out.webm"), 1)
+            .unwrap_err();
+        assert!(matches!(error, CpuFallbackError::Failed));
+        assert!(!error.to_string().contains("private"));
+
+        let pid = dir.path().join("child.pid");
+        let timeout = fake_executable(
+            dir.path(),
+            "timeout",
+            &format!("echo $$ > '{}'; sleep 5", pid.display()),
+        );
+        let started = Instant::now();
+        let error = CpuFallback::new(&timeout, &timeout)
+            .with_timeouts(Duration::from_secs(2), Duration::from_secs(2))
+            .generate_synthetic(&dir.path().join("timeout.webm"), 1)
+            .unwrap_err();
+        assert!(matches!(error, CpuFallbackError::TimedOut));
+        assert!(started.elapsed() < Duration::from_secs(4));
+        let child_pid = fs::read_to_string(pid).unwrap();
+        assert!(
+            !std::process::Command::new("kill")
+                .args(["-0", child_pid.trim()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+}

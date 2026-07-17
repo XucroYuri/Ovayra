@@ -26,7 +26,7 @@ pub(crate) enum MediaCommand {
         ffmpeg: PathBuf,
         #[arg(long)]
         ffprobe: PathBuf,
-        #[arg(long, default_value_t = 10)]
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
         seconds: u64,
         #[arg(long)]
         output: PathBuf,
@@ -104,5 +104,27 @@ mod tests {
             panic!("expected media cpu-fallback");
         };
         assert_eq!(seconds, 10);
+    }
+
+    #[test]
+    fn rejects_zero_seconds() {
+        assert!(
+            Cli::try_parse_from([
+                "ovayra-spike",
+                "media",
+                "cpu-fallback",
+                "--ffmpeg",
+                "ffmpeg",
+                "--ffprobe",
+                "ffprobe",
+                "--seconds",
+                "0",
+                "--output",
+                "fallback.webm",
+                "--evidence",
+                "evidence.json",
+            ])
+            .is_err()
+        );
     }
 }

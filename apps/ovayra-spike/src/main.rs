@@ -1,6 +1,6 @@
 mod cli;
 
-use std::{env, fs, time::Instant};
+use std::{env, fs, io::Write, path::Path, time::Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -21,7 +21,7 @@ fn main() -> Result<()> {
                     output,
                     evidence,
                 },
-        } => cpu_fallback(ffmpeg, ffprobe, seconds, &output, evidence)?,
+        } => cpu_fallback(ffmpeg, ffprobe, seconds, &output, &evidence)?,
     }
     Ok(())
 }
@@ -31,7 +31,7 @@ fn cpu_fallback(
     ffprobe: std::path::PathBuf,
     seconds: u64,
     output: &std::path::Path,
-    evidence_path: std::path::PathBuf,
+    evidence_path: &std::path::Path,
 ) -> Result<()> {
     let target = env::var("OVAYRA_EVIDENCE_TARGET")
         .context("OVAYRA_EVIDENCE_TARGET must name a supported Phase 0 target")?;
@@ -58,11 +58,38 @@ fn cpu_fallback(
     );
 
     let json = evidence.to_pretty_json()?;
-    let parent = evidence_path
-        .parent()
-        .context("evidence path must have a parent directory")?;
+    let parent = evidence_path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).context("unable to create evidence directory")?;
-    fs::write(evidence_path, json).context("unable to write evidence")?;
+    write_evidence_atomic(evidence_path, &json).context("unable to write evidence")?;
     println!("CPU_FALLBACK=PASS codec=vp9 audio=opus");
     Ok(())
+}
+
+fn write_evidence_atomic(destination: &Path, json: &str) -> std::io::Result<()> {
+    let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(json.as_bytes())?;
+    temporary.flush()?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(destination)
+        .map(|_| ())
+        .map_err(|error| error.error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::write_evidence_atomic;
+
+    #[test]
+    fn atomically_replaces_evidence_without_leaving_temporary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("evidence.json");
+        fs::write(&destination, "old").unwrap();
+        write_evidence_atomic(&destination, "new").unwrap();
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "new");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
 }

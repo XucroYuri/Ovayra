@@ -20,6 +20,7 @@ spike-media = { path = "../../crates/spike-media" }
 spike-platform = { path = "../../crates/spike-platform" }
 spike-release = { path = "../../crates/spike-release" }
 tokio.workspace = true
+tempfile.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

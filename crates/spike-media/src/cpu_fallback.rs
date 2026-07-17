@@ -3,11 +3,13 @@ use std::{
     fmt::Write as _,
     fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::Stdio,
+    time::Duration,
 };
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{ProgressError, ProgressParser};
 
@@ -16,6 +18,13 @@ use crate::{ProgressError, ProgressParser};
 pub struct CpuFallback {
     ffmpeg: PathBuf,
     ffprobe: PathBuf,
+    timeouts: ProcessTimeouts,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProcessTimeouts {
+    generation: Duration,
+    utility: Duration,
 }
 
 /// Successful `FFmpeg` execution details safe to include in evidence.
@@ -27,16 +36,35 @@ pub struct CpuFallbackOutput {
 
 #[derive(Debug, Error)]
 pub enum CpuFallbackError {
+    #[error("requested duration must be positive")]
+    InvalidRequestedDuration,
     #[error("unable to start FFmpeg")]
-    Spawn(#[source] std::io::Error),
+    Spawn,
     #[error("FFmpeg failed")]
     Failed,
-    #[error("unable to read FFmpeg build identity")]
-    BuildId(#[source] std::io::Error),
+    #[error("FFmpeg timed out")]
+    TimedOut,
+    #[error("FFmpeg output exceeded its bounded limit")]
+    OutputLimit,
+    #[error("unable to collect FFmpeg output")]
+    Collect,
     #[error("FFmpeg build identity was empty")]
     EmptyBuildId,
+    #[error("FFmpeg build identity command failed")]
+    BuildIdFailed,
     #[error(transparent)]
     Progress(#[from] ProgressError),
+}
+
+impl CpuFallbackError {
+    fn from_collection(error: &ChildCollectionError) -> Self {
+        match error {
+            ChildCollectionError::Spawn(_) => Self::Spawn,
+            ChildCollectionError::Read(_) | ChildCollectionError::Runtime(_) => Self::Collect,
+            ChildCollectionError::TimedOut => Self::TimedOut,
+            ChildCollectionError::StdoutLimit => Self::OutputLimit,
+        }
+    }
 }
 
 impl CpuFallback {
@@ -45,7 +73,21 @@ impl CpuFallback {
         Self {
             ffmpeg: ffmpeg.into(),
             ffprobe: ffprobe.into(),
+            timeouts: ProcessTimeouts {
+                generation: Duration::from_secs(600),
+                utility: Duration::from_secs(5),
+            },
         }
+    }
+
+    /// Overrides bounded process timeouts for controlled child-process tests.
+    #[must_use]
+    pub fn with_timeouts(mut self, generation: Duration, utility: Duration) -> Self {
+        self.timeouts = ProcessTimeouts {
+            generation,
+            utility,
+        };
+        self
     }
 
     #[must_use]
@@ -112,10 +154,22 @@ impl CpuFallback {
         output: &Path,
         seconds: u64,
     ) -> Result<CpuFallbackOutput, CpuFallbackError> {
-        let process = Command::new(&self.ffmpeg)
-            .args(self.ffmpeg_arguments(output, seconds))
-            .output()
-            .map_err(CpuFallbackError::Spawn)?;
+        if seconds == 0 {
+            return Err(CpuFallbackError::InvalidRequestedDuration);
+        }
+        let headroom = Duration::from_secs(15);
+        let generation_timeout = Duration::from_secs(seconds)
+            .saturating_add(headroom)
+            .min(Duration::from_secs(600))
+            .min(self.timeouts.generation);
+        let process = collect_child(
+            &self.ffmpeg,
+            self.ffmpeg_arguments(output, seconds),
+            generation_timeout,
+            64 * 1024,
+            16 * 1024,
+        )
+        .map_err(|error| CpuFallbackError::from_collection(&error))?;
         if !process.status.success() {
             return Err(CpuFallbackError::Failed);
         }
@@ -150,10 +204,17 @@ impl CpuFallback {
     ///
     /// Returns a redacted error if the executable cannot run or prints no identity line.
     pub fn ffmpeg_build_id(&self) -> Result<String, CpuFallbackError> {
-        let output = Command::new(&self.ffmpeg)
-            .arg("-version")
-            .output()
-            .map_err(CpuFallbackError::BuildId)?;
+        let output = collect_child(
+            &self.ffmpeg,
+            [OsString::from("-version")],
+            self.timeouts.utility,
+            8 * 1024,
+            8 * 1024,
+        )
+        .map_err(|error| CpuFallbackError::from_collection(&error))?;
+        if !output.status.success() {
+            return Err(CpuFallbackError::BuildIdFailed);
+        }
         let line = String::from_utf8_lossy(&output.stdout)
             .lines()
             .find(|line| !line.is_empty())
@@ -182,7 +243,13 @@ pub struct FfprobeReport {
 #[derive(Debug, Error)]
 pub enum FfprobeError {
     #[error("unable to start ffprobe")]
-    Spawn(#[source] std::io::Error),
+    Spawn,
+    #[error("ffprobe timed out")]
+    TimedOut,
+    #[error("ffprobe output exceeded its bounded limit")]
+    OutputLimit,
+    #[error("unable to collect ffprobe output")]
+    Collect,
     #[error("ffprobe failed")]
     Failed,
     #[error("ffprobe returned malformed JSON")]
@@ -199,6 +266,17 @@ pub enum FfprobeError {
     InvalidDuration,
 }
 
+impl FfprobeError {
+    fn from_collection(error: &ChildCollectionError) -> Self {
+        match error {
+            ChildCollectionError::Spawn(_) => Self::Spawn,
+            ChildCollectionError::Read(_) | ChildCollectionError::Runtime(_) => Self::Collect,
+            ChildCollectionError::TimedOut => Self::TimedOut,
+            ChildCollectionError::StdoutLimit => Self::OutputLimit,
+        }
+    }
+}
+
 impl FfprobeReport {
     /// Runs the exact bounded ffprobe query and validates its result without retaining logs.
     ///
@@ -206,19 +284,25 @@ impl FfprobeReport {
     ///
     /// Returns a redacted error for child failure or invalid media metadata.
     pub fn read(ffprobe: impl AsRef<Path>, output: &Path) -> Result<Self, FfprobeError> {
-        let bytes = fs::metadata(output).map_err(FfprobeError::Spawn)?.len();
-        let process = Command::new(ffprobe.as_ref())
-            .args([
+        let bytes = fs::metadata(output).map_err(|_| FfprobeError::Spawn)?.len();
+        let process = collect_child(
+            ffprobe.as_ref(),
+            [
                 "-v",
                 "error",
                 "-show_entries",
                 "format=format_name,duration:stream=codec_name,codec_type,pix_fmt",
                 "-of",
                 "json",
-            ])
-            .arg(output)
-            .output()
-            .map_err(FfprobeError::Spawn)?;
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .chain(std::iter::once(output.as_os_str().to_owned())),
+            Duration::from_secs(5),
+            64 * 1024,
+            16 * 1024,
+        )
+        .map_err(|error| FfprobeError::from_collection(&error))?;
         Self::from_child_output(process.status.success(), &process.stdout, bytes)
     }
 
@@ -285,6 +369,131 @@ impl FfprobeReport {
             video_pixel_format: video.pix_fmt.clone(),
         })
     }
+}
+
+#[derive(Debug, Error)]
+enum ChildCollectionError {
+    #[error("unable to spawn child")]
+    Spawn(#[source] std::io::Error),
+    #[error("unable to drain child output")]
+    Read(#[source] std::io::Error),
+    #[error("child timed out")]
+    TimedOut,
+    #[error("child stdout exceeded its limit")]
+    StdoutLimit,
+    #[error("unable to create child collector runtime")]
+    Runtime(#[source] std::io::Error),
+}
+
+struct ChildOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+}
+
+fn collect_child<I>(
+    program: &Path,
+    arguments: I,
+    timeout: Duration,
+    stdout_limit: usize,
+    stderr_limit: usize,
+) -> Result<ChildOutput, ChildCollectionError>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(ChildCollectionError::Runtime)?;
+    runtime.block_on(collect_child_async(
+        program.to_owned(),
+        arguments.into_iter().collect(),
+        timeout,
+        stdout_limit,
+        stderr_limit,
+    ))
+}
+
+async fn collect_child_async(
+    program: PathBuf,
+    arguments: Vec<OsString>,
+    timeout: Duration,
+    stdout_limit: usize,
+    stderr_limit: usize,
+) -> Result<ChildOutput, ChildCollectionError> {
+    let mut child = tokio::process::Command::new(program)
+        .args(arguments)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(ChildCollectionError::Spawn)?;
+    let stdout = child.stdout.take().ok_or_else(missing_pipe)?;
+    let stderr = child.stderr.take().ok_or_else(missing_pipe)?;
+    let stdout_task = tokio::spawn(drain_pipe(stdout, stdout_limit, true));
+    let stderr_task = tokio::spawn(drain_pipe(stderr, stderr_limit, false));
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => return Err(ChildCollectionError::Read(error)),
+        Err(_) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            stdout_task.abort();
+            stderr_task.abort();
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            return Err(ChildCollectionError::TimedOut);
+        }
+    };
+    let stdout = stdout_task
+        .await
+        .map_err(|error| join_error(&error))?
+        .map_err(ChildCollectionError::Read)?;
+    let _stderr = stderr_task
+        .await
+        .map_err(|error| join_error(&error))?
+        .map_err(ChildCollectionError::Read)?;
+    if stdout.truncated {
+        return Err(ChildCollectionError::StdoutLimit);
+    }
+    Ok(ChildOutput {
+        status,
+        stdout: stdout.bytes,
+    })
+}
+
+fn missing_pipe() -> ChildCollectionError {
+    ChildCollectionError::Read(std::io::Error::other("child pipe was unavailable"))
+}
+
+fn join_error(error: &tokio::task::JoinError) -> ChildCollectionError {
+    ChildCollectionError::Read(std::io::Error::other(error.to_string()))
+}
+
+struct DrainedPipe {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+async fn drain_pipe<R>(mut reader: R, limit: usize, retain: bool) -> std::io::Result<DrainedPipe>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut bytes = Vec::with_capacity(limit);
+    let mut buffer = [0_u8; 8 * 1024];
+    let mut truncated = false;
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        if retain {
+            let remaining = limit.saturating_sub(bytes.len());
+            let copied = remaining.min(read);
+            bytes.extend_from_slice(&buffer[..copied]);
+            truncated |= copied != read;
+        }
+    }
+    Ok(DrainedPipe { bytes, truncated })
 }
 
 #[derive(serde::Deserialize)]

@@ -32,3 +32,11 @@ git diff --check
 ```
 
 The pinned `OVAYRA_FFMPEG` and `OVAYRA_FFPROBE` executables are unavailable in this environment, so the live ignored test and CLI smoke command were deliberately not run. They require those pinned variables and remain ready for a target runner.
+
+## Review-fix RED/GREEN
+
+RED contracts were added for zero-duration rejection, Clap rejection of `--seconds 0`, controlled child collection, bounded timeout/reap behavior, and atomic evidence replacement. The initial compile failed as expected because `InvalidRequestedDuration`, `TimedOut`, `with_timeouts`, and `write_evidence_atomic` did not exist.
+
+GREEN replaces all CPU fallback, build-ID, and ffprobe `Command::output` paths with one Tokio child collector. It uses piped stdout/stderr, concurrent bounded draining (discarding excess), `kill_on_drop`, and a timeout that kills then waits/reaps the child before returning a redacted typed error. Generation timeout is `seconds + 15s`, capped at ten minutes; utility commands use five seconds. Zero seconds is rejected before child spawn both by the API and by Clap.
+
+The evidence writer now creates a temporary file in the destination directory, writes, flushes, syncs, and atomically persists it. Its contract confirms replacement leaves no temporary artifacts. The controlled Unix child tests validate exact generated arguments, build-ID and ffprobe execution, 128 KiB stderr flood draining, nonzero redaction, timeout termination/reap, and no unpinned FFmpeg execution.
