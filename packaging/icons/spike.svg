@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Ovayra Phase 0">
+  <rect width="512" height="512" rx="112" fill="#111827"/>
+  <path d="M104 144 256 72l152 72v224l-152 72-152-72V144Z" fill="#2563eb"/>
+  <path d="m182 191 74 145 74-145h-48l-26 58-26-58h-48Z" fill="#f8fafc"/>
+  <circle cx="256" cy="256" r="184" fill="none" stroke="#93c5fd" stroke-width="12"/>
+</svg>

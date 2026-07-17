@@ -166,6 +166,52 @@ pub(crate) enum ReleaseCommand {
         #[arg(long)]
         evidence: PathBuf,
     },
+    /// Validate a target-bound `FFmpeg` bundle and create deterministic package resources.
+    PreparePackage {
+        #[arg(long, env = "OVAYRA_FFMPEG_BUNDLE")]
+        bundle: PathBuf,
+        #[arg(long, env = "OVAYRA_TARGET_TRIPLE")]
+        target: String,
+        #[arg(long, default_value = "target/phase-0")]
+        output_root: PathBuf,
+    },
+    /// Discover signed native packages and atomically write the updater manifest.
+    Manifest {
+        #[arg(long)]
+        packages: PathBuf,
+        #[arg(long)]
+        base_url: String,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value = env!("CARGO_PKG_VERSION"))]
+        version: String,
+        #[arg(long)]
+        pub_date: String,
+        #[arg(long, default_value = "Ovayra Phase 0 release")]
+        notes: String,
+    },
+    /// Verify every update file against the generated manifest and a Minisign public key.
+    VerifyManifest {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        packages: PathBuf,
+        #[arg(long, env = "OVAYRA_UPDATE_PUBLIC_KEY")]
+        public_key: PathBuf,
+        #[arg(long, default_value = env!("CARGO_PKG_VERSION"))]
+        installed_version: String,
+    },
+    /// Corrupt a temporary package copy and prove manifest verification rejects it.
+    VerifyTamperRejection {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        packages: PathBuf,
+        #[arg(long, env = "OVAYRA_UPDATE_PUBLIC_KEY")]
+        public_key: PathBuf,
+        #[arg(long, default_value = env!("CARGO_PKG_VERSION"))]
+        installed_version: String,
+    },
 }
 
 fn parse_hardware_backend(input: &str) -> Result<Backend, String> {
@@ -202,6 +248,63 @@ mod tests {
                 command: ReleaseCommand::VerifyFfmpeg { .. }
             }
         ));
+    }
+
+    #[test]
+    fn parses_release_packaging_and_manifest_integrity_commands() {
+        let prepare = Cli::try_parse_from([
+            "ovayra-spike",
+            "release",
+            "prepare-package",
+            "--bundle",
+            "bundle",
+            "--target",
+            "aarch64-apple-darwin",
+        ])
+        .unwrap();
+        assert!(matches!(
+            prepare.command,
+            Command::Release {
+                command: ReleaseCommand::PreparePackage { .. }
+            }
+        ));
+
+        let manifest = Cli::try_parse_from([
+            "ovayra-spike",
+            "release",
+            "manifest",
+            "--packages",
+            "packages",
+            "--base-url",
+            "https://updates.ovayra.com/phase-0/",
+            "--output",
+            "latest.json",
+            "--pub-date",
+            "2026-07-17T00:00:00Z",
+        ])
+        .unwrap();
+        assert!(matches!(
+            manifest.command,
+            Command::Release {
+                command: ReleaseCommand::Manifest { .. }
+            }
+        ));
+
+        for command in ["verify-manifest", "verify-tamper-rejection"] {
+            let cli = Cli::try_parse_from([
+                "ovayra-spike",
+                "release",
+                command,
+                "--manifest",
+                "latest.json",
+                "--packages",
+                "packages",
+                "--public-key",
+                "update.pub",
+            ])
+            .unwrap();
+            assert!(matches!(cli.command, Command::Release { .. }));
+        }
     }
 
     #[test]

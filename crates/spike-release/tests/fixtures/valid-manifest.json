@@ -1,0 +1,25 @@
+{
+  "version": "0.0.2",
+  "pub_date": "2026-07-17T00:00:00Z",
+  "notes": "Phase 0 update fixture.",
+  "platforms": {
+    "darwin-aarch64": {
+      "url": "https://updates.ovayra.com/phase-0/Ovayra-Phase-0-aarch64.app",
+      "signature": "untrusted comment: fixture signature",
+      "format": "app",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "windows-x86_64": {
+      "url": "https://updates.ovayra.com/phase-0/Ovayra-Phase-0-x64.msi",
+      "signature": "untrusted comment: fixture signature",
+      "format": "wix",
+      "sha256": "1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "linux-x86_64": {
+      "url": "https://updates.ovayra.com/phase-0/Ovayra-Phase-0-x86_64.AppImage",
+      "signature": "untrusted comment: fixture signature",
+      "format": "appimage",
+      "sha256": "2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  }
+}

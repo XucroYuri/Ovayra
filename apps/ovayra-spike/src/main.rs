@@ -5,6 +5,7 @@ mod preview_app;
 
 use std::{
     env, fs,
+    io::{BufReader, BufWriter},
     path::Path,
     path::PathBuf,
     time::{Duration, Instant},
@@ -13,6 +14,8 @@ use std::{
 use aes_gcm::aead::Generate;
 use anyhow::{Context, Result};
 use clap::Parser;
+use semver::Version;
+use sha2::Digest;
 use spike_contracts::{Evidence, SpikeId, TargetId, Verdict};
 use spike_gemini::GeminiClient;
 use spike_media::{
@@ -22,7 +25,7 @@ use spike_media::{
 use spike_platform::{
     EncryptedRecord, EnvelopeCipher, OsSecretStore, SecretStore, SecretStoreError,
 };
-use spike_release::FfmpegBundle;
+use spike_release::{FfmpegBundle, PackageRelease};
 use zeroize::Zeroizing;
 
 use crate::cli::{Cli, Command, GeminiCommand, MediaCommand, PlatformCommand, ReleaseCommand};
@@ -150,7 +153,190 @@ fn main() -> Result<()> {
         Command::Release {
             command: ReleaseCommand::VerifyFfmpeg { bundle, evidence },
         } => verify_ffmpeg_bundle(&bundle, &evidence, evidence_target()?)?,
+        Command::Release {
+            command:
+                ReleaseCommand::PreparePackage {
+                    bundle,
+                    target,
+                    output_root,
+                },
+        } => prepare_package(&bundle, &target, &output_root)?,
+        Command::Release {
+            command:
+                ReleaseCommand::Manifest {
+                    packages,
+                    base_url,
+                    output,
+                    version,
+                    pub_date,
+                    notes,
+                },
+        } => {
+            let version = Version::parse(&version).context("release version must be SemVer")?;
+            PackageRelease::generate_manifest(
+                &packages, &base_url, &output, &version, &pub_date, &notes,
+            )
+            .context("release manifest generation failed")?;
+            println!("MANIFEST=PASS");
+        }
+        Command::Release {
+            command:
+                ReleaseCommand::VerifyManifest {
+                    manifest,
+                    packages,
+                    public_key,
+                    installed_version,
+                },
+        } => verify_package_manifest(&manifest, &packages, &public_key, &installed_version, false)?,
+        Command::Release {
+            command:
+                ReleaseCommand::VerifyTamperRejection {
+                    manifest,
+                    packages,
+                    public_key,
+                    installed_version,
+                },
+        } => verify_package_manifest(&manifest, &packages, &public_key, &installed_version, true)?,
     }
+    Ok(())
+}
+
+fn verify_package_manifest(
+    manifest: &Path,
+    packages: &Path,
+    public_key_path: &Path,
+    installed_version: &str,
+    tamper: bool,
+) -> Result<()> {
+    let public_key =
+        fs::read_to_string(public_key_path).context("cannot read update public key")?;
+    let installed =
+        Version::parse(installed_version).context("installed version must be SemVer")?;
+    if tamper {
+        PackageRelease::verify_tamper_rejection(manifest, packages, &public_key, &installed)
+            .context("update tamper rejection failed")?;
+        println!("TAMPER_REJECTION=PASS");
+    } else {
+        PackageRelease::verify_manifest(manifest, packages, &public_key, &installed)
+            .context("update manifest verification failed")?;
+        println!("MANIFEST=PASS");
+    }
+    Ok(())
+}
+
+fn prepare_package(bundle: &Path, target: &str, output_root: &Path) -> Result<()> {
+    let expected_marker = match target {
+        "aarch64-apple-darwin" => "macos-arm64-vt",
+        "x86_64-pc-windows-msvc" => "windows-x64-mf",
+        "x86_64-unknown-linux-gnu" => "linux-x64-vaapi-wayland",
+        _ => anyhow::bail!("unsupported package target triple"),
+    };
+    FfmpegBundle::validate_layout(bundle)
+        .context("FFmpeg bundle failed locked layout validation")?;
+    if fs::read_to_string(bundle.join(".ovayra-target"))?.trim() != expected_marker {
+        anyhow::bail!("FFmpeg bundle target marker does not match requested package triple");
+    }
+    fs::create_dir_all(output_root)?;
+    let temporary = tempfile::Builder::new()
+        .prefix("ovayra-package-")
+        .tempdir_in(output_root)?;
+    let staged_bundle = temporary.path().join("ffmpeg-stage");
+    copy_validated_tree(bundle, &staged_bundle)?;
+    generate_icons(&temporary.path().join("icons"))?;
+    for directory in ["ffmpeg-stage", "icons"] {
+        let destination = output_root.join(directory);
+        if destination.exists() {
+            fs::remove_dir_all(&destination)?;
+        }
+        fs::rename(temporary.path().join(directory), destination)?;
+    }
+    println!("PACKAGE_PREPARE=PASS target={target}");
+    Ok(())
+}
+
+fn copy_validated_tree(source: &Path, destination: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        anyhow::bail!("unsafe FFmpeg source directory");
+    }
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let metadata = fs::symlink_metadata(&source_path)?;
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!("FFmpeg bundle contains symlink during staging");
+        }
+        if metadata.is_dir() {
+            copy_validated_tree(&source_path, &destination_path)?;
+        } else if metadata.is_file() {
+            fs::copy(&source_path, &destination_path)?;
+            fs::set_permissions(&destination_path, metadata.permissions())?;
+            let source_hash = sha2::Sha256::digest(fs::read(&source_path)?);
+            let destination_hash = sha2::Sha256::digest(fs::read(&destination_path)?);
+            if source_hash != destination_hash {
+                anyhow::bail!("FFmpeg file changed while being staged");
+            }
+        } else {
+            anyhow::bail!("FFmpeg bundle contains non-regular path");
+        }
+    }
+    Ok(())
+}
+
+fn generate_icons(directory: &Path) -> Result<()> {
+    use icns::{IconFamily, Image, PixelFormat};
+    use ico::{IconDir, IconDirEntry, IconImage, ResourceType};
+    use resvg::{tiny_skia, usvg};
+
+    fs::create_dir_all(directory)?;
+    let svg =
+        fs::read("packaging/icons/spike.svg").context("cannot read deterministic SVG icon")?;
+    let tree =
+        usvg::Tree::from_data(&svg, &usvg::Options::default()).context("cannot parse SVG icon")?;
+    let mut images = Vec::new();
+    for size in [16_u32, 32, 128, 256, 512] {
+        let mut pixmap =
+            tiny_skia::Pixmap::new(size, size).context("cannot allocate icon pixmap")?;
+        let scale = f32::from(u16::try_from(size).expect("icon size is bounded"))
+            / tree.size().width().max(tree.size().height());
+        resvg::render(
+            &tree,
+            tiny_skia::Transform::from_scale(scale, scale),
+            &mut pixmap.as_mut(),
+        );
+        let path = directory.join(format!("{size}x{size}.png"));
+        pixmap.save_png(&path)?;
+        let reader = png::Decoder::new(BufReader::new(fs::File::open(&path)?)).read_info()?;
+        if reader.info().width != size
+            || reader.info().height != size
+            || sha2::Sha256::digest(fs::read(&path)?)
+                .iter()
+                .all(|byte| *byte == 0)
+        {
+            anyhow::bail!("invalid deterministic PNG icon");
+        }
+        images.push((size, pixmap.data().to_vec()));
+    }
+    let mut ico = IconDir::new(ResourceType::Icon);
+    for (size, rgba) in &images {
+        ico.add_entry(IconDirEntry::encode_as_png(&IconImage::from_rgba_data(
+            *size,
+            *size,
+            rgba.clone(),
+        ))?);
+    }
+    ico.write(BufWriter::new(fs::File::create(
+        directory.join("spike.ico"),
+    )?))?;
+    let mut family = IconFamily::new();
+    for (size, rgba) in images.into_iter().filter(|(size, _)| *size >= 128) {
+        family.add_icon(&Image::from_data(PixelFormat::RGBA, size, size, rgba)?)?;
+    }
+    family.write(BufWriter::new(fs::File::create(
+        directory.join("spike.icns"),
+    )?))?;
     Ok(())
 }
 

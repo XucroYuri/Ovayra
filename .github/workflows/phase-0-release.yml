@@ -1,0 +1,106 @@
+name: phase-0-release
+
+on:
+  pull_request:
+    paths: ["apps/**", "crates/**", "packaging/**", "scripts/**", "Cargo.toml", "Cargo.lock", ".github/workflows/phase-0-release.yml", ".github/workflows/phase-0-ffmpeg.yml"]
+  push:
+    tags: ["phase-0-v*"]
+    paths: ["apps/**", "crates/**", "packaging/**", "scripts/**", "Cargo.toml", "Cargo.lock", ".github/workflows/phase-0-release.yml", ".github/workflows/phase-0-ffmpeg.yml"]
+  workflow_dispatch:
+    inputs:
+      ffmpeg_run_id:
+        description: "Successful phase-0-ffmpeg run ID that uploaded validated bundles"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  pr-unsigned:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Test release parser and package discovery without signing material
+        run: cargo test --locked -p spike-release --test manifest_signature && cargo test --locked -p ovayra-spike cli::tests::parses_release_packaging_and_manifest_integrity_commands
+      - name: Install exact cargo-packager for configuration inspection
+        run: cargo install cargo-packager --version 0.11.8 --locked
+      - name: Check the exact packager CLI and declarative configuration
+        run: cargo packager --help >/dev/null && test -f packaging/Packager.toml
+
+  package-native:
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: macos-arm64-vt, runner: macos-14, triple: aarch64-apple-darwin, formats: app,dmg, inspect: 'test -d target/phase-0/packages/*.app && test -f target/phase-0/packages/*.dmg' }
+          - { id: windows-x64-mf, runner: windows-2025, triple: x86_64-pc-windows-msvc, formats: wix, inspect: 'if (-not (Test-Path target/phase-0/packages/*.msi)) { throw "missing MSI" }' }
+          - { id: linux-x64-vaapi-wayland, runner: ubuntu-24.04, triple: x86_64-unknown-linux-gnu, formats: appimage,deb, inspect: 'test -f target/phase-0/packages/*.AppImage && test -f target/phase-0/packages/*.deb' }
+    runs-on: ${{ matrix.runner }}
+    environment: phase-0-package
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Download the validated Task 10 bundle artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.ffmpeg_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RUN_ID" || { echo 'ffmpeg_run_id is required; packaging is gated rather than passing without a validated bundle' >&2; exit 1; }
+          gh run download "$RUN_ID" --name "ffmpeg-${{ matrix.id }}-bundle" --dir target/ffmpeg-artifact
+          test -d target/ffmpeg-artifact
+      - name: Install exact cargo-packager
+        run: cargo install cargo-packager --version 0.11.8 --locked
+      - name: Stage only the locked target bundle and deterministic icons
+        shell: bash
+        env:
+          OVAYRA_FFMPEG_BUNDLE: target/ffmpeg-artifact
+          OVAYRA_TARGET_TRIPLE: ${{ matrix.triple }}
+        run: cargo run --locked -p ovayra-spike -- release prepare-package --bundle "$OVAYRA_FFMPEG_BUNDLE" --target "$OVAYRA_TARGET_TRIPLE"
+      - name: Build unsigned native package
+        run: cargo packager --release --config packaging/Packager.toml --formats ${{ matrix.formats }}
+      - name: Inspect expected native package contents
+        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+        run: ${{ matrix.inspect }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-0-${{ matrix.id }}-unsigned
+          path: target/phase-0/packages/**
+          if-no-files-found: error
+
+  sign-and-verify:
+    needs: package-native
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    environment: phase-0-release-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: phase-0-*-unsigned
+          merge-multiple: true
+          path: target/phase-0/packages
+      - name: Refuse to sign unless protected signing inputs exist
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.CARGO_PACKAGER_SIGN_PRIVATE_KEY }}
+          OVAYRA_UPDATE_PUBLIC_KEY: ${{ vars.OVAYRA_UPDATE_PUBLIC_KEY }}
+        run: test -n "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" && test -n "$OVAYRA_UPDATE_PUBLIC_KEY"
+      - name: Install exact cargo-packager
+        run: cargo install cargo-packager --version 0.11.8 --locked
+      - name: Sign Linux update artifact then generate and corruption-test manifest
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.CARGO_PACKAGER_SIGN_PRIVATE_KEY }}
+          OVAYRA_UPDATE_PUBLIC_KEY: ${{ vars.OVAYRA_UPDATE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          update_artifact=$(find target/phase-0/packages -type f -name '*.AppImage' -print -quit)
+          test -n "$update_artifact"
+          cargo packager signer sign --private-key "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" "$update_artifact"
+          printf '%s\n' "$OVAYRA_UPDATE_PUBLIC_KEY" > target/phase-0/update.pub
+          cargo run --locked -p ovayra-spike -- release manifest --packages target/phase-0/packages --base-url https://updates.ovayra.com/phase-0/ --output target/phase-0/latest.json --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          cargo run --locked -p ovayra-spike -- release verify-manifest --manifest target/phase-0/latest.json --packages target/phase-0/packages --public-key target/phase-0/update.pub
+          cargo run --locked -p ovayra-spike -- release verify-tamper-rejection --manifest target/phase-0/latest.json --packages target/phase-0/packages --public-key target/phase-0/update.pub
