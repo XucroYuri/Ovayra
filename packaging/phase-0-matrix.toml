@@ -1,0 +1,156 @@
+# Required real-device evidence for the experimental Phase 0 spikes.
+# Every entry must produce a passing, redacted evidence record.
+
+[[required]]
+id = "preview"
+target = "macos-arm64-vt"
+session = "aqua"
+
+[[required]]
+id = "media"
+target = "macos-arm64-vt"
+backend = "videotoolbox"
+
+[[required]]
+id = "media"
+target = "macos-arm64-vt"
+backend = "cpu-fallback"
+
+[[required]]
+id = "platform"
+target = "macos-arm64-vt"
+session = "aqua"
+
+[[required]]
+id = "gemini"
+target = "macos-arm64-vt"
+
+[[required]]
+id = "distribution"
+target = "macos-arm64-vt"
+
+[[required]]
+id = "preview"
+target = "windows-x64-mf"
+session = "windows"
+
+[[required]]
+id = "media"
+target = "windows-x64-mf"
+backend = "d3d11va-mf"
+
+[[required]]
+id = "media"
+target = "windows-x64-mf"
+backend = "cpu-fallback"
+
+[[required]]
+id = "platform"
+target = "windows-x64-mf"
+session = "windows"
+
+[[required]]
+id = "gemini"
+target = "windows-x64-mf"
+
+[[required]]
+id = "distribution"
+target = "windows-x64-mf"
+
+[[required]]
+id = "preview"
+target = "windows-x64-nvidia"
+session = "windows"
+
+[[required]]
+id = "media"
+target = "windows-x64-nvidia"
+backend = "nvenc-nvdec"
+
+[[required]]
+id = "media"
+target = "windows-x64-nvidia"
+backend = "cpu-fallback"
+
+[[required]]
+id = "platform"
+target = "windows-x64-nvidia"
+session = "windows"
+
+[[required]]
+id = "gemini"
+target = "windows-x64-nvidia"
+
+[[required]]
+id = "preview"
+target = "linux-x64-vaapi-wayland"
+session = "wayland"
+
+[[required]]
+id = "media"
+target = "linux-x64-vaapi-wayland"
+backend = "vaapi"
+
+[[required]]
+id = "media"
+target = "linux-x64-vaapi-wayland"
+backend = "cpu-fallback"
+
+[[required]]
+id = "platform"
+target = "linux-x64-vaapi-wayland"
+session = "wayland"
+
+[[required]]
+id = "gemini"
+target = "linux-x64-vaapi-wayland"
+
+[[required]]
+id = "distribution"
+target = "linux-x64-vaapi-wayland"
+
+[[required]]
+id = "preview"
+target = "linux-x64-vaapi-x11"
+session = "x11"
+
+[[required]]
+id = "media"
+target = "linux-x64-vaapi-x11"
+backend = "vaapi"
+
+[[required]]
+id = "media"
+target = "linux-x64-vaapi-x11"
+backend = "cpu-fallback"
+
+[[required]]
+id = "platform"
+target = "linux-x64-vaapi-x11"
+session = "x11"
+
+[[required]]
+id = "gemini"
+target = "linux-x64-vaapi-x11"
+
+[[required]]
+id = "preview"
+target = "linux-x64-nvidia"
+
+[[required]]
+id = "media"
+target = "linux-x64-nvidia"
+backend = "nvenc-nvdec"
+
+[[required]]
+id = "media"
+target = "linux-x64-nvidia"
+backend = "cpu-fallback"
+
+[[required]]
+id = "platform"
+target = "linux-x64-nvidia"
+
+[[required]]
+id = "gemini"
+target = "linux-x64-nvidia"
