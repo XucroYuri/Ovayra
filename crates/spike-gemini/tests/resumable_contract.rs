@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use spike_gemini::{FileState, GeminiClient, RetryPolicy};
+use spike_gemini::{FileState, GeminiClient, PollPolicy, RetryPolicy};
 use spike_platform::{EnvelopeCipher, MemorySecretStore};
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
@@ -313,20 +313,21 @@ async fn caps_nonzero_retry_after_and_never_blindly_replays_transport_errors() {
 }
 
 #[tokio::test]
-async fn polling_times_out_and_failed_files_are_terminal() {
+async fn persistent_processing_returns_poll_timeout() {
     let server = MockServer::start().await;
-    Mock::given(matchers::method("GET")).and(matchers::path("/v1beta/files/failed"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"name":"files/failed","uri":"gemini://files/failed","mimeType":"video/webm","state":"FAILED","error":{"code":13,"message":"remote failure","status":"INTERNAL"}})))
+    Mock::given(matchers::method("GET")).and(matchers::path("/v1beta/files/processing"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"name":"files/processing","uri":"gemini://files/processing","mimeType":"video/webm","state":"PROCESSING","sizeBytes":"8","createTime":"2026-07-17T00:00:00Z","updateTime":"2026-07-17T00:00:01Z","expirationTime":"2026-07-19T00:00:00Z","sha256Hash":"abc","displayName":"synthetic","videoMetadata":{"videoDuration":"8s"}})))
         .mount(&server).await;
-    let error = client(&server)
-        .poll_until_ready(
-            "files/failed",
-            Duration::from_millis(1),
-            Duration::from_millis(5),
-        )
-        .await
-        .unwrap_err();
-    assert!(!format!("{error:?}").contains("api-key-that-must-not-leak"));
+    for _ in 0..20 {
+        let error = client(&server)
+            .poll_until_ready_with_policy(
+                "files/processing",
+                PollPolicy::bounded(Duration::ZERO, Duration::ZERO),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, spike_gemini::GeminiError::PollTimeout));
+    }
 }
 
 #[tokio::test]

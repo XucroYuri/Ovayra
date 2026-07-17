@@ -47,6 +47,20 @@ impl Default for RetryPolicy {
     }
 }
 
+/// Bounded polling cadence for a remote Gemini file.
+#[derive(Debug, Clone, Copy)]
+pub struct PollPolicy {
+    interval: Duration,
+    timeout: Duration,
+}
+
+impl PollPolicy {
+    #[must_use]
+    pub const fn bounded(interval: Duration, timeout: Duration) -> Self {
+        Self { interval, timeout }
+    }
+}
+
 /// Redacted generation measurements; analysis text is intentionally not exposed.
 pub struct GenerationResult {
     analysis_nonempty: bool,
@@ -293,7 +307,16 @@ impl GeminiClient {
         interval: Duration,
         timeout: Duration,
     ) -> Result<RemoteFile, GeminiError> {
-        let deadline = Instant::now() + timeout;
+        self.poll_until_ready_with_policy(name, PollPolicy::bounded(interval, timeout))
+            .await
+    }
+
+    pub async fn poll_until_ready_with_policy(
+        &self,
+        name: &str,
+        policy: PollPolicy,
+    ) -> Result<RemoteFile, GeminiError> {
+        let deadline = Instant::now() + policy.timeout;
         loop {
             let remote = self.get_file(name).await?;
             match remote.state {
@@ -304,7 +327,12 @@ impl GeminiClient {
             if Instant::now() >= deadline {
                 return Err(GeminiError::PollTimeout);
             }
-            sleep(interval.min(deadline.saturating_duration_since(Instant::now()))).await;
+            sleep(
+                policy
+                    .interval
+                    .min(deadline.saturating_duration_since(Instant::now())),
+            )
+            .await;
         }
     }
 

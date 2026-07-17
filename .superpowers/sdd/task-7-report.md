@@ -44,3 +44,13 @@ pre-existing workspace policy issue is outside Task 7's dependency pins.
 - Initial implementation: `ba24fd2180b2c838e14df0c803d1917c1d607b8c`.
 - Review-remediation candidate: recorded by the enclosing atomic commit; this report does not
   claim its own self-referential final hash.
+
+## Deterministic behavior map
+
+| Behavior | Production-path test | Command |
+| --- | --- | --- |
+| Non-final chunk retries only 429/5xx, not 4xx | `chunk_retries_429_and_5xx_but_not_4xx` | `cargo test -p spike-gemini --test resumable_contract -- --test-threads=1` |
+| Persistent processing timeout with bounded policy | `persistent_processing_returns_poll_timeout` | same command; test loops 20 times |
+| Empty decoded generation is redacted metrics | `decoded_empty_generation_returns_redacted_failure_metrics` | same command |
+| Server offset supersedes checkpoint hint | `resume_orchestration_uses_server_offset_when_checkpoint_hint_differs` | `cargo test -p ovayra-spike -- --test-threads=1` |
+| Terminal analysis failure cleans remote file | `terminal_analysis_failure_still_attempts_remote_cleanup` | same command |
