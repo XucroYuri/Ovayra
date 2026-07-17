@@ -41,13 +41,19 @@ locate_one() {
 }
 
 inspect_root() {
-  local tree="$1" app_name="$2" ffmpeg_name="$3" notice root app
+  local tree="$1" app_name="$2" ffmpeg_name="$3" notice root app relative hash size
   notice="$(locate_one "$tree" 'ffmpeg/NOTICE.txt')"
   root="${notice%/ffmpeg/NOTICE.txt}"
   app="$(locate_one "$tree" "$app_name")"
   args=(--root "$root" --app "$app" --ffmpeg-name "$ffmpeg_name")
   if "$require_nv"; then args+=(--require-nv); fi
   scripts/inspect-package-contents.sh "${args[@]}"
+  while IFS= read -r -d '' file; do
+    relative=${file#"$tree"/}
+    hash=$(shasum -a 256 "$file" | awk '{print $1}')
+    size=$(wc -c < "$file" | tr -d ' ')
+    printf '%s\t%s\t%s\n' "$relative" "$hash" "$size"
+  done < <(find "$tree" -type f -print0) | LC_ALL=C sort | shasum -a 256 | awk '{print "INSPECTION_TREE_SHA256=" $1}'
 }
 
 case "$kind" in

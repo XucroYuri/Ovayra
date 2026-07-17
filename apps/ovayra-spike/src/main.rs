@@ -19,9 +19,11 @@ use aes_gcm::aead::Generate;
 use anyhow::{Context, Result};
 use clap::Parser;
 use semver::Version;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use spike_contracts::{
-    DistributionFfmpegProof, Evidence, GeminiStageProof, MediaCpuProof, MediaForcedFallbackProof,
+    ArtifactDigestProof, DistributionFfmpegProof, DistributionPackageProof,
+    DistributionUpdateProof, Evidence, GeminiStageProof, MediaCpuProof, MediaForcedFallbackProof,
     MediaHardwareProof, PhaseZeroProof, PlatformKeyringProof, SpikeId, TargetId, Verdict,
 };
 use spike_contracts::{
@@ -257,8 +259,240 @@ fn main() -> Result<()> {
                 .context("native artifact signature verification failed")?;
             println!("ARTIFACT_SIGNATURE=PASS");
         }
+        Command::Release {
+            command:
+                ReleaseCommand::ProvePackage {
+                    target_id,
+                    packages,
+                    public_key,
+                    attestation,
+                    source_lock,
+                    evidence,
+                },
+        } => prove_package(
+            TargetId::new(&target_id)?,
+            &packages,
+            &public_key,
+            &attestation,
+            &source_lock,
+            &evidence,
+        )?,
+        Command::Release {
+            command:
+                ReleaseCommand::ProveUpdate {
+                    target_id,
+                    manifest,
+                    packages,
+                    public_key,
+                    installed_version,
+                    evidence,
+                },
+        } => prove_update(
+            TargetId::new(&target_id)?,
+            &manifest,
+            &packages,
+            &public_key,
+            &installed_version,
+            &evidence,
+        )?,
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageAttestation {
+    schema_version: u32,
+    target: String,
+    source_lock_sha256: String,
+    inspection_sha256: String,
+    platform_verification: String,
+    notarization: Option<String>,
+    artifacts: Vec<ArtifactDigestProof>,
+}
+
+fn prove_package(
+    target: TargetId,
+    packages: &Path,
+    public_key_path: &Path,
+    attestation_path: &Path,
+    source_lock: &Path,
+    evidence_path: &Path,
+) -> Result<()> {
+    let public_key =
+        fs::read_to_string(public_key_path).context("cannot read update public key")?;
+    let actual = release_artifact_digests(packages, target.as_str(), &public_key)?;
+    let attestation: PackageAttestation = serde_json::from_slice(
+        &fs::read(attestation_path).context("cannot read package attestation")?,
+    )
+    .context("package attestation must be strict JSON")?;
+    if attestation.schema_version != 1 || attestation.target != target.as_str() {
+        anyhow::bail!("package attestation is not bound to the requested target");
+    }
+    if !is_sha256(&attestation.source_lock_sha256) || !is_sha256(&attestation.inspection_sha256) {
+        anyhow::bail!("package attestation has an invalid source or inspection digest");
+    }
+    if attestation.source_lock_sha256
+        != sha256_hex(&fs::read(source_lock).context("cannot read FFmpeg source lock")?)
+    {
+        anyhow::bail!("package attestation source lock does not match the validated source lock");
+    }
+    if !package_attestation_matches_target(&target, &attestation) {
+        anyhow::bail!("package attestation has an invalid platform verification status");
+    }
+    if attestation.artifacts != actual {
+        anyhow::bail!("package attestation artifact digests do not match signed artifacts");
+    }
+
+    let proof = PhaseZeroProof {
+        schema_version: 2,
+        component: ProofComponent::DistributionPackage,
+        row: ProofRow {
+            spike: SpikeId::Distribution,
+            target,
+            session: None,
+            backend: None,
+        },
+        proof: ProofPayload::DistributionPackage(DistributionPackageProof {
+            artifacts: actual,
+            source_lock_sha256: attestation.source_lock_sha256,
+            inspection_sha256: attestation.inspection_sha256,
+            platform_verification: attestation.platform_verification,
+            notarization: attestation.notarization,
+        }),
+    };
+    write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)?;
+    println!("PACKAGE_PROOF=PASS");
+    Ok(())
+}
+
+fn package_attestation_matches_target(target: &TargetId, attestation: &PackageAttestation) -> bool {
+    match target.as_str() {
+        "macos-arm64-vt" => {
+            attestation.platform_verification == "codesign_notary_staple"
+                && attestation.notarization.as_deref() == Some("accepted")
+        }
+        "windows-x64-mf" => {
+            attestation.platform_verification == "authenticode"
+                && attestation.notarization.is_none()
+        }
+        "linux-x64-vaapi-wayland" => {
+            attestation.platform_verification == "minisign" && attestation.notarization.is_none()
+        }
+        _ => false,
+    }
+}
+
+fn prove_update(
+    target: TargetId,
+    manifest: &Path,
+    packages: &Path,
+    public_key_path: &Path,
+    installed_version: &str,
+    evidence_path: &Path,
+) -> Result<()> {
+    let public_key =
+        fs::read_to_string(public_key_path).context("cannot read update public key")?;
+    let installed =
+        Version::parse(installed_version).context("installed version must be SemVer")?;
+    PackageRelease::verify_manifest(manifest, packages, &public_key, &installed)
+        .context("update manifest verification failed")?;
+    PackageRelease::verify_tamper_rejection(manifest, packages, &public_key, &installed)
+        .context("update tamper rejection failed")?;
+    let artifacts = release_artifact_digests(packages, target.as_str(), &public_key)?;
+    let manifest_sha256 = sha256_hex(&fs::read(manifest).context("cannot read update manifest")?);
+    let updater_format = updater_format(target.as_str())
+        .context("target does not have a supported updater format")?
+        .to_owned();
+    let proof = PhaseZeroProof {
+        schema_version: 2,
+        component: ProofComponent::DistributionUpdate,
+        row: ProofRow {
+            spike: SpikeId::Distribution,
+            target,
+            session: None,
+            backend: None,
+        },
+        proof: ProofPayload::DistributionUpdate(DistributionUpdateProof {
+            manifest_sha256,
+            artifacts,
+            updater_format,
+            signature_verification: "pinned_minisign".to_owned(),
+            tamper_rejection: "updater_and_download".to_owned(),
+        }),
+    };
+    write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)?;
+    println!("UPDATE_PROOF=PASS");
+    Ok(())
+}
+
+fn release_artifact_digests(
+    packages: &Path,
+    target: &str,
+    public_key: &str,
+) -> Result<Vec<ArtifactDigestProof>> {
+    let mut artifacts = Vec::new();
+    for (format, suffix) in native_artifact_specs(target)
+        .context("target does not have required native artifact formats")?
+    {
+        let candidates: Vec<_> = fs::read_dir(packages)
+            .context("cannot enumerate native artifacts")?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(suffix))
+            .collect();
+        if candidates.len() != 1 {
+            anyhow::bail!("required native artifact is missing or ambiguous");
+        }
+        let path = candidates[0].path();
+        PackageRelease::verify_artifact(&path, public_key)
+            .context("native artifact Minisign verification failed")?;
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() == 0 {
+            anyhow::bail!("native artifact is not a nonempty regular file");
+        }
+        let bytes = fs::read(&path)?;
+        if u64::try_from(bytes.len())? != metadata.len()
+            || fs::metadata(&path)?.len() != metadata.len()
+        {
+            anyhow::bail!("native artifact changed while being hashed");
+        }
+        artifacts.push(ArtifactDigestProof {
+            format: (*format).to_owned(),
+            sha256: sha256_hex(&bytes),
+            length: metadata.len(),
+        });
+    }
+    artifacts.sort_by(|left, right| left.format.cmp(&right.format));
+    Ok(artifacts)
+}
+
+fn native_artifact_specs(target: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    match target {
+        "macos-arm64-vt" => Some(&[
+            ("app", "darwin-aarch64.app.tar.gz"),
+            ("dmg", "darwin-aarch64.dmg"),
+        ]),
+        "windows-x64-mf" => Some(&[("wix", "windows-x86_64.msi")]),
+        "linux-x64-vaapi-wayland" => Some(&[
+            ("appimage", "linux-x86_64.AppImage"),
+            ("deb", "linux-x86_64.deb"),
+        ]),
+        _ => None,
+    }
+}
+
+fn updater_format(target: &str) -> Option<&'static str> {
+    match target {
+        "macos-arm64-vt" => Some("app"),
+        "windows-x64-mf" => Some("wix"),
+        "linux-x64-vaapi-wayland" => Some("appimage"),
+        _ => None,
+    }
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn verify_package_manifest(
@@ -470,6 +704,11 @@ fn verify_ffmpeg_pair(
             reproducible: true,
             lgpl_only: true,
             source_correspondence: true,
+            source_lock_sha256: sha256_hex(
+                &fs::read(bundle_a.join("provenance/ffmpeg.lock"))
+                    .context("cannot read validated FFmpeg source lock")?,
+            ),
+            bundle_tree_sha256: tree_a.clone(),
         }),
     };
     write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)?;

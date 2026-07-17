@@ -42,6 +42,13 @@ function Inspect-ExtractedTree([string]$Root, [bool]$NeedsNv) {
   )
   if ($NeedsNv) { $required += 'ffmpeg/LICENSES/nv-codec-headers-MIT.txt', 'ffmpeg/provenance/nv-codec-headers-source.tar.zst' }
   foreach ($relative in $required) { Require-RegularFile $resourceRoot $relative }
+  $tuples = @(Get-ChildItem -LiteralPath $Root -Recurse -Force -File | Sort-Object FullName | ForEach-Object {
+    $relative = $_.FullName.Substring($Root.Length).TrimStart('\', '/')
+    "$relative`t$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())`t$($_.Length)"
+  })
+  $bytes = [Text.Encoding]::UTF8.GetBytes(($tuples -join "`n") + "`n")
+  $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+  Write-Output "INSPECTION_TREE_SHA256=$hash"
 }
 
 if (!(Test-Path -LiteralPath $Artifact -PathType Leaf)) { throw "missing MSI: $Artifact" }

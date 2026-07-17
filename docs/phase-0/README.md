@@ -49,4 +49,13 @@ Package or notarization logs must use bounded text mode before upload:
 cargo run --locked -p ovayra-spike -- evidence lint --dir target/phase-0/package-logs --text
 ```
 
+Task 11 native packaging writes only schema-v2 package proofs after the platform
+signature/notarization and package-content inspection checks have passed. The
+aggregate updater job writes one schema-v2 update proof per supported release
+target after the pinned Minisign manifest verification and both one-byte
+corruption rejections. A final acceptance collection must download those Task
+11 proof files together with the corresponding Task 10 FFmpeg reproducibility
+proofs into a clean evidence directory, lint it, and run the same gate command
+above; package logs and raw attestations remain diagnostics, never gate input.
+
 The device workflow separately checks the typed preview JSON with `evidence verify-preview`; it requires 120 seconds, 23--25 FPS, hide/restore, p95 at most 100 ms, RSS growth at most 64 MiB, and complete RSS samples. It does not accept a console `PASS` line as proof.

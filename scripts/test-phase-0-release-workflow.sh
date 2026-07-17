@@ -9,6 +9,11 @@ for required in \
   'scripts/inspect-native-package.ps1 -Kind msi' \
   'scripts/inspect-native-package.sh --kind appimage' \
   'scripts/inspect-native-package.sh --kind deb' \
+  'release prove-package --target-id macos-arm64-vt' \
+  'release prove-package --target-id windows-x64-mf' \
+  'release prove-package --target-id linux-x64-vaapi-wayland' \
+  'release prove-update --target-id "$target"' \
+  'scripts/write-package-attestation.py' \
   'scripts/validate-release-producer-event.sh' \
   'head_repository.full_name == github.repository' \
   'producer tag does not match workflow run' \
@@ -18,3 +23,5 @@ done
 rg -F --quiet 'hdiutil attach -plist -readonly -nobrowse' "$inspector"
 rg -F --quiet 'attachment="$(scripts/parse-hdiutil-plist.py' "$inspector"
 rg -F --quiet 'hdiutil detach "$device"' "$inspector"
+test -f scripts/write-package-attestation.py
+python3 scripts/write-package-attestation.py --help >/dev/null

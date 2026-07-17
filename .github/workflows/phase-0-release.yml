@@ -124,8 +124,8 @@ jobs:
           codesign --force --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
           xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
           xcrun stapler staple "$app"; xcrun stapler staple "$dmg"; codesign --verify --deep --strict --verbose=2 "$app"; spctl --assess --type execute --verbose=4 "$app"; xcrun stapler validate "$dmg"
-          scripts/inspect-native-package.sh --kind app --artifact "$app"
-          scripts/inspect-native-package.sh --kind dmg --artifact "$dmg"
+          inspection_log=target/phase-0/package-inspection.log
+          { scripts/inspect-native-package.sh --kind app --artifact "$app"; scripts/inspect-native-package.sh --kind dmg --artifact "$dmg"; } > "$inspection_log"
           mkdir -p target/phase-0/release-artifacts
           COPYFILE_DISABLE=1 tar --format=ustar --uid 0 --gid 0 --numeric-owner -czf target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.app.tar.gz -C "$(dirname "$app")" "$(basename "$app")"
           cp "$dmg" target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.dmg
@@ -133,6 +133,8 @@ jobs:
           cargo packager signer sign --private-key "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.dmg
           cargo run --locked -p ovayra-spike -- release verify-artifact --package target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.app.tar.gz --public-key packaging/update.pub
           cargo run --locked -p ovayra-spike -- release verify-artifact --package target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.dmg --public-key packaging/update.pub
+          python3 scripts/write-package-attestation.py --target macos-arm64-vt --platform-verification codesign_notary_staple --notarization accepted --source-lock target/ffmpeg-artifact/provenance/ffmpeg.lock --inspection-log "$inspection_log" --artifact app=target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.app.tar.gz --artifact dmg=target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.dmg --output target/phase-0/package-attestation.json
+          cargo run --locked -p ovayra-spike -- release prove-package --target-id macos-arm64-vt --packages target/phase-0/release-artifacts --public-key packaging/update.pub --attestation target/phase-0/package-attestation.json --source-lock target/ffmpeg-artifact/provenance/ffmpeg.lock --evidence target/phase-0/evidence/package-macos-arm64-vt.json
       - name: Protected Windows Authenticode sign, verify, and normalize updater payload
         if: runner.os == 'Windows'
         env:
@@ -147,10 +149,12 @@ jobs:
           $msi = Get-ChildItem target/phase-0/packages -Filter *.msi | Select-Object -First 1; if ($null -eq $msi) { throw 'missing MSI' }
           signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /sha1 $certificate.Thumbprint $msi.FullName; signtool verify /pa /all $msi.FullName
           if ((Get-AuthenticodeSignature $msi.FullName).Status -ne 'Valid') { throw 'MSI Authenticode verification failed' }
-          & scripts/inspect-native-package.ps1 -Kind msi -Artifact $msi.FullName -RequireNv
+          $inspectionLog = 'target/phase-0/package-inspection.log'; & scripts/inspect-native-package.ps1 -Kind msi -Artifact $msi.FullName -RequireNv *>&1 | Tee-Object -FilePath $inspectionLog
           New-Item -ItemType Directory -Force target/phase-0/release-artifacts | Out-Null; $normalized = 'target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_windows-x86_64.msi'; Copy-Item $msi.FullName $normalized
           cargo packager signer sign --private-key $env:CARGO_PACKAGER_SIGN_PRIVATE_KEY $normalized
           cargo run --locked -p ovayra-spike -- release verify-artifact --package $normalized --public-key packaging/update.pub
+          python scripts/write-package-attestation.py --target windows-x64-mf --platform-verification authenticode --source-lock target/ffmpeg-artifact/provenance/ffmpeg.lock --inspection-log $inspectionLog --artifact wix=$normalized --output target/phase-0/package-attestation.json
+          cargo run --locked -p ovayra-spike -- release prove-package --target-id windows-x64-mf --packages target/phase-0/release-artifacts --public-key packaging/update.pub --attestation target/phase-0/package-attestation.json --source-lock target/ffmpeg-artifact/provenance/ffmpeg.lock --evidence target/phase-0/evidence/package-windows-x64-mf.json
       - name: Protected Linux Minisign sign and normalize AppImage and deb
         if: runner.os == 'Linux'
         env:
@@ -166,12 +170,16 @@ jobs:
           cargo packager signer sign --private-key "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.deb
           cargo run --locked -p ovayra-spike -- release verify-artifact --package target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.AppImage --public-key packaging/update.pub
           cargo run --locked -p ovayra-spike -- release verify-artifact --package target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.deb --public-key packaging/update.pub
-          scripts/inspect-native-package.sh --kind appimage --artifact target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.AppImage --require-nv
-          scripts/inspect-native-package.sh --kind deb --artifact target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.deb --require-nv
+          inspection_log=target/phase-0/package-inspection.log
+          { scripts/inspect-native-package.sh --kind appimage --artifact target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.AppImage --require-nv; scripts/inspect-native-package.sh --kind deb --artifact target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.deb --require-nv; } > "$inspection_log"
+          python3 scripts/write-package-attestation.py --target linux-x64-vaapi-wayland --platform-verification minisign --source-lock target/ffmpeg-artifact/provenance/ffmpeg.lock --inspection-log "$inspection_log" --artifact appimage=target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.AppImage --artifact deb=target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_linux-x86_64.deb --output target/phase-0/package-attestation.json
+          cargo run --locked -p ovayra-spike -- release prove-package --target-id linux-x64-vaapi-wayland --packages target/phase-0/release-artifacts --public-key packaging/update.pub --attestation target/phase-0/package-attestation.json --source-lock target/ffmpeg-artifact/provenance/ffmpeg.lock --evidence target/phase-0/evidence/package-linux-x64-vaapi-wayland.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: phase-0-${{ matrix.id }}-unsigned
-          path: target/phase-0/release-artifacts/**
+          path: |
+            target/phase-0/release-artifacts/**
+            target/phase-0/evidence/package-${{ matrix.id }}.json
           if-no-files-found: error
 
   sign-and-verify:
@@ -199,6 +207,9 @@ jobs:
           cargo run --locked -p ovayra-spike -- release manifest --packages target/phase-0/packages --base-url https://updates.ovayra.com/phase-0/ --output target/phase-0/latest.json --version 0.0.1 --release-tag "$GITHUB_REF_NAME" --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           cargo run --locked -p ovayra-spike -- release verify-manifest --manifest target/phase-0/latest.json --packages target/phase-0/packages --public-key packaging/update.pub --installed-version 0.0.0
           cargo run --locked -p ovayra-spike -- release verify-tamper-rejection --manifest target/phase-0/latest.json --packages target/phase-0/packages --public-key packaging/update.pub --installed-version 0.0.0
+          for target in macos-arm64-vt windows-x64-mf linux-x64-vaapi-wayland; do
+            cargo run --locked -p ovayra-spike -- release prove-update --target-id "$target" --manifest target/phase-0/latest.json --packages target/phase-0/packages --public-key packaging/update.pub --installed-version 0.0.0 --evidence "target/phase-0/evidence/update-$target.json"
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: phase-0-signed-release-${{ github.ref_name }}
@@ -206,6 +217,7 @@ jobs:
             target/phase-0/packages/**
             target/phase-0/latest.json
             target/phase-0/downloads.json
+            target/phase-0/evidence/*.json
           if-no-files-found: error
       - name: Publish verified signed release assets
         env:

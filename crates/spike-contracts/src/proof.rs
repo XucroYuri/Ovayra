@@ -181,12 +181,28 @@ strict!(DistributionFfmpegProof {
     sbom: bool,
     reproducible: bool,
     lgpl_only: bool,
-    source_correspondence: bool
+    source_correspondence: bool,
+    source_lock_sha256: String,
+    bundle_tree_sha256: String
 });
-strict!(DistributionPackageProof { formats: Vec<String>, platform_signature: bool, notarized: Option<bool> });
+strict!(ArtifactDigestProof {
+    format: String,
+    sha256: String,
+    length: u64
+});
+strict!(DistributionPackageProof {
+    artifacts: Vec<ArtifactDigestProof>,
+    source_lock_sha256: String,
+    inspection_sha256: String,
+    platform_verification: String,
+    notarization: Option<String>
+});
 strict!(DistributionUpdateProof {
-    manifest_signed: bool,
-    one_byte_tamper_rejected: bool
+    manifest_sha256: String,
+    artifacts: Vec<ArtifactDigestProof>,
+    updater_format: String,
+    signature_verification: String,
+    tamper_rejection: String
 });
 
 #[derive(Debug, Error)]

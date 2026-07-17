@@ -224,6 +224,7 @@ impl PhaseZeroMatrix {
                 }
             }
         }
+        validate_distribution_relationships(proofs, &self.required)?;
         Ok(())
     }
 
@@ -419,17 +420,24 @@ fn validate_typed_proof(
                 && value.reproducible
                 && value.lgpl_only
                 && value.source_correspondence
+                && sha256(Some(&value.source_lock_sha256))
+                && sha256(Some(&value.bundle_tree_sha256))
         }
         (ProofComponent::DistributionPackage, ProofPayload::DistributionPackage(value)) => {
-            expected_formats(required.target.as_str()).is_some_and(|expected| {
-                expected
-                    .iter()
-                    .all(|format| value.formats.iter().any(|actual| actual == format))
-            }) && (required.target.as_str() != "macos-arm64-vt" || value.notarized == Some(true))
-                && value.platform_signature
+            expected_formats(required.target.as_str())
+                .is_some_and(|expected| exact_artifact_formats(&value.artifacts, expected))
+                && sha256(Some(&value.source_lock_sha256))
+                && sha256(Some(&value.inspection_sha256))
+                && package_platform_verified(required.target.as_str(), value)
         }
         (ProofComponent::DistributionUpdate, ProofPayload::DistributionUpdate(value)) => {
-            value.manifest_signed && value.one_byte_tamper_rejected
+            expected_formats(required.target.as_str())
+                .is_some_and(|expected| exact_artifact_formats(&value.artifacts, expected))
+                && sha256(Some(&value.manifest_sha256))
+                && expected_updater_format(required.target.as_str())
+                    == Some(value.updater_format.as_str())
+                && value.signature_verification == "pinned_minisign"
+                && value.tamper_rejection == "updater_and_download"
         }
         _ => false,
     };
@@ -443,10 +451,95 @@ fn validate_typed_proof(
     }
 }
 
+fn validate_distribution_relationships(
+    proofs: &[PhaseZeroProof],
+    required: &[RequiredEvidence],
+) -> Result<(), MatrixError> {
+    for row in required
+        .iter()
+        .filter(|row| row.id == SpikeId::Distribution)
+    {
+        let ffmpeg = proofs.iter().find(|proof| {
+            proof.component == ProofComponent::DistributionFfmpeg && proof.row.target == row.target
+        });
+        let package = proofs.iter().find(|proof| {
+            proof.component == ProofComponent::DistributionPackage && proof.row.target == row.target
+        });
+        let update = proofs.iter().find(|proof| {
+            proof.component == ProofComponent::DistributionUpdate && proof.row.target == row.target
+        });
+        let (
+            Some(PhaseZeroProof {
+                proof: ProofPayload::DistributionFfmpeg(ffmpeg),
+                ..
+            }),
+            Some(PhaseZeroProof {
+                proof: ProofPayload::DistributionPackage(package),
+                ..
+            }),
+            Some(PhaseZeroProof {
+                proof: ProofPayload::DistributionUpdate(update),
+                ..
+            }),
+        ) = (ffmpeg, package, update)
+        else {
+            continue;
+        };
+        if ffmpeg.source_lock_sha256 != package.source_lock_sha256
+            || package.artifacts != update.artifacts
+            || !sha256(Some(&update.manifest_sha256))
+        {
+            return Err(MatrixError::Requirement(
+                "distribution proof relationships".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn exact_artifact_formats(artifacts: &[crate::ArtifactDigestProof], expected: &[&str]) -> bool {
+    let mut actual: Vec<_> = artifacts
+        .iter()
+        .map(|artifact| artifact.format.as_str())
+        .collect();
+    actual.sort_unstable();
+    let mut expected = expected.to_vec();
+    expected.sort_unstable();
+    actual == expected
+        && artifacts
+            .iter()
+            .all(|artifact| artifact.length > 0 && sha256(Some(&artifact.sha256)))
+}
+
+fn package_platform_verified(target: &str, value: &crate::DistributionPackageProof) -> bool {
+    match target {
+        "macos-arm64-vt" => {
+            value.platform_verification == "codesign_notary_staple"
+                && value.notarization.as_deref() == Some("accepted")
+        }
+        "windows-x64-mf" => {
+            value.platform_verification == "authenticode" && value.notarization.is_none()
+        }
+        "linux-x64-vaapi-wayland" => {
+            value.platform_verification == "minisign" && value.notarization.is_none()
+        }
+        _ => false,
+    }
+}
+
+fn expected_updater_format(target: &str) -> Option<&'static str> {
+    match target {
+        "macos-arm64-vt" => Some("app"),
+        "windows-x64-mf" => Some("wix"),
+        "linux-x64-vaapi-wayland" => Some("appimage"),
+        _ => None,
+    }
+}
+
 fn expected_formats(target: &str) -> Option<&'static [&'static str]> {
     match target {
         "macos-arm64-vt" => Some(&["app", "dmg"]),
-        "windows-x64-mf" => Some(&["msi"]),
+        "windows-x64-mf" => Some(&["wix"]),
         "linux-x64-vaapi-wayland" => Some(&["appimage", "deb"]),
         _ => None,
     }

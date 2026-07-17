@@ -268,6 +268,36 @@ pub(crate) enum ReleaseCommand {
         #[arg(long, env = "OVAYRA_UPDATE_PUBLIC_KEY")]
         public_key: PathBuf,
     },
+    /// Recompute signed native artifact digests and emit a strict platform-package proof.
+    ProvePackage {
+        #[arg(long)]
+        target_id: String,
+        #[arg(long)]
+        packages: PathBuf,
+        #[arg(long, env = "OVAYRA_UPDATE_PUBLIC_KEY")]
+        public_key: PathBuf,
+        #[arg(long)]
+        attestation: PathBuf,
+        #[arg(long)]
+        source_lock: PathBuf,
+        #[arg(long)]
+        evidence: PathBuf,
+    },
+    /// Verify the updater manifest and corruption tests, then emit one target-bound update proof.
+    ProveUpdate {
+        #[arg(long)]
+        target_id: String,
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        packages: PathBuf,
+        #[arg(long, env = "OVAYRA_UPDATE_PUBLIC_KEY")]
+        public_key: PathBuf,
+        #[arg(long)]
+        installed_version: String,
+        #[arg(long)]
+        evidence: PathBuf,
+    },
 }
 
 fn parse_hardware_backend(input: &str) -> Result<Backend, String> {
@@ -329,6 +359,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // Covers the complete release CLI contract in one parse fixture.
     fn parses_release_packaging_and_manifest_integrity_commands() {
         let prepare = Cli::try_parse_from([
             "ovayra-spike",
@@ -406,6 +437,35 @@ mod tests {
                 command: ReleaseCommand::VerifyArtifact { .. }
             }
         ));
+
+        for command in ["prove-package", "prove-update"] {
+            let mut args = vec![
+                "ovayra-spike",
+                "release",
+                command,
+                "--target-id",
+                "linux-x64-vaapi-wayland",
+                "--packages",
+                "packages",
+                "--public-key",
+                "update.pub",
+            ];
+            if command == "prove-package" {
+                args.extend([
+                    "--attestation",
+                    "attestation.json",
+                    "--source-lock",
+                    "ffmpeg.lock",
+                ]);
+            } else {
+                args.extend(["--manifest", "latest.json", "--installed-version", "0.0.0"]);
+            }
+            args.extend(["--evidence", "proof.json"]);
+            assert!(matches!(
+                Cli::try_parse_from(args).unwrap().command,
+                Command::Release { .. }
+            ));
+        }
     }
 
     #[test]
