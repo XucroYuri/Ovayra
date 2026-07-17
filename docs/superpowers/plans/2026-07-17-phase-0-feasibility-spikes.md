@@ -1226,7 +1226,7 @@ git commit -m "feat: protect upload sessions with os keyring"
 - Modify: `apps/ovayra-spike/src/main.rs`
 - Modify: `apps/ovayra-spike/src/cli.rs`
 
-- [ ] **Step 1: Write the failing process-group cancellation test**
+- [x] **Step 1: Write the failing process-group cancellation test**
 
 ```rust
 use std::time::Duration;
@@ -1244,7 +1244,7 @@ async fn cancellation_terminates_parent_and_grandchild() {
 
 Keep this test under the application package so Cargo defines `CARGO_BIN_EXE_ovayra-spike`; the process implementation itself remains in `spike-platform`.
 
-- [ ] **Step 2: Implement a cross-platform Rust child tree**
+- [x] **Step 2: Implement a cross-platform Rust child tree**
 
 The hidden `child-tree` command spawns the same executable with hidden `child-leaf`, prints one JSON line containing both PIDs, flushes stdout, and waits. `child-leaf` sleeps for 60 seconds. No shell-specific `sleep`, `ping`, or signal command is used.
 
@@ -1264,7 +1264,7 @@ let child = command.group_spawn()?;
 
 `kill_and_wait` calls the grouped child's `kill().await` under a five-second Tokio timeout. On Unix this targets a process group; on Windows `command-group` uses a job object.
 
-- [ ] **Step 3: Run the cancellation test on all OS runners**
+- [x] **Step 3: Run the cancellation test on all OS runners**
 
 ```bash
 cargo test -p ovayra-spike cancellation_terminates_parent_and_grandchild -- --exact
@@ -1272,7 +1272,7 @@ cargo test -p ovayra-spike cancellation_terminates_parent_and_grandchild -- --ex
 
 Expected: parent and grandchild both report dead within five seconds.
 
-- [ ] **Step 4: Wire close-to-tray and explicit quit**
+- [x] **Step 4: Wire close-to-tray and explicit quit**
 
 Create the tray first. If successful, set the main window close callback to `slint::CloseRequestResponse::HideWindow`; keep the tray strong handle alive on the main stack. Wire tray restore to `window.show()` and tray quit to `slint::quit_event_loop()`.
 
@@ -1285,7 +1285,7 @@ If tray creation fails or `--force-no-tray` is present:
 
 This is the Phase 0 candidate for the Linux degradation rule. The ADR may accept it only after Wayland and X11 evidence passes.
 
-- [ ] **Step 5: Run normal and forced-fallback lifecycle tests**
+- [x] **Step 5: Run normal and forced-fallback lifecycle tests**
 
 ```bash
 cargo run -p ovayra-spike -- platform tray --automation \
@@ -1296,7 +1296,7 @@ cargo run -p ovayra-spike -- platform tray --automation --force-no-tray \
 
 Expected: normal mode prints `TRAY=PASS hide=PASS restore=PASS quit=PASS`; fallback prints `TRAY_FALLBACK=PASS window_accessible=true warning_visible=true`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/spike-platform apps/ovayra-spike

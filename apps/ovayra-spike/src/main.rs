@@ -1,3 +1,4 @@
+mod child_tree;
 mod cli;
 mod gemini_orchestration;
 mod preview_app;
@@ -30,9 +31,16 @@ const UPLOAD_CHECKPOINT_ACCOUNT: &str = "phase-0-upload-checkpoint-v1";
 const KEYRING_SMOKE_SERVICE: &str = "com.ovayra.desktop";
 const KEYRING_SMOKE_ACCOUNT_PREFIX: &str = "phase-0-keyring-smoke";
 
+#[allow(clippy::too_many_lines)] // Composition-root command dispatch is intentionally explicit.
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Version => println!("ovayra-spike {}", env!("CARGO_PKG_VERSION")),
+        Command::ChildTree {
+            malformed_report,
+            delay_report,
+            exit_before_report,
+        } => child_tree::run_child_tree(malformed_report, delay_report, exit_before_report)?,
+        Command::ChildLeaf => child_tree::run_child_leaf(),
         Command::Preview {
             ffmpeg,
             input,
@@ -119,6 +127,19 @@ fn main() -> Result<()> {
         Command::Platform {
             command: PlatformCommand::Keyring { evidence },
         } => keyring_smoke(&OsSecretStore, &evidence, evidence_target()?)?,
+        Command::Platform {
+            command:
+                PlatformCommand::Tray {
+                    automation,
+                    force_no_tray,
+                    evidence,
+                },
+        } => preview_app::run_tray_lifecycle(
+            automation,
+            force_no_tray,
+            &evidence,
+            evidence_target()?,
+        )?,
     }
     Ok(())
 }

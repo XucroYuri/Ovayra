@@ -249,6 +249,215 @@ impl FrameBridge {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)] // Evidence records each independently measured lifecycle transition.
+#[derive(Default)]
+struct TrayMetrics {
+    close_callback: bool,
+    hidden: bool,
+    restore_callback: bool,
+    restored: bool,
+    quit_callback: bool,
+    window_accessible: bool,
+    warning_visible: bool,
+    failsafe_fired: bool,
+}
+
+const TRAY_WARNING: &str = "Tray unavailable; keep this window open or choose Quit";
+
+#[allow(clippy::too_many_lines)] // Keeps the UI-thread-only lifecycle wiring auditable in one place.
+pub(crate) fn run_tray_lifecycle(
+    automation: bool,
+    force_no_tray: bool,
+    evidence_path: &Path,
+    target: TargetId,
+) -> Result<()> {
+    let started = Instant::now();
+    let backend = parse_backend(std::env::var("SLINT_BACKEND").ok().as_deref())?;
+    backend.select()?;
+    let window = PreviewWindow::new().context("unable to create tray lifecycle window")?;
+    let metrics = Arc::new(Mutex::new(TrayMetrics::default()));
+    let quit_metrics = Arc::clone(&metrics);
+    window.on_quit(move || {
+        if let Ok(mut metrics) = quit_metrics.lock() {
+            metrics.quit_callback = true;
+        }
+        let _ = slint::quit_event_loop();
+    });
+
+    let (tray, unavailable_category) = if force_no_tray {
+        (None, Some("forced_no_tray"))
+    } else {
+        match SpikeTray::new() {
+            Ok(tray) => (Some(tray), None),
+            Err(_) => (None, Some("tray_creation_failed")),
+        }
+    };
+
+    if let Some(tray) = tray.as_ref() {
+        window.set_status_text("Tray ready".into());
+        let close_metrics = Arc::clone(&metrics);
+        window.window().on_close_requested(move || {
+            if let Ok(mut metrics) = close_metrics.lock() {
+                metrics.close_callback = true;
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+        let close_window = window.as_weak();
+        let close_metrics = Arc::clone(&metrics);
+        window.on_close_to_tray(move || {
+            if let Some(window) = close_window.upgrade()
+                && window.hide().is_ok()
+                && let Ok(mut metrics) = close_metrics.lock()
+            {
+                metrics.close_callback = true;
+                metrics.hidden = true;
+            }
+        });
+        let restore_window = window.as_weak();
+        let restore_metrics = Arc::clone(&metrics);
+        tray.on_restore(move || {
+            if let Some(window) = restore_window.upgrade() {
+                if let Ok(mut metrics) = restore_metrics.lock() {
+                    metrics.restore_callback = true;
+                }
+                if window.show().is_ok()
+                    && let Ok(mut metrics) = restore_metrics.lock()
+                {
+                    metrics.restored = true;
+                }
+            }
+        });
+        let quit_window = window.as_weak();
+        tray.on_quit(move || {
+            if let Some(window) = quit_window.upgrade() {
+                window.invoke_quit();
+            }
+        });
+    } else {
+        let category = unavailable_category.expect("fallback always has a failure category");
+        window.set_status_text(format!("Tray unavailable ({category})").into());
+        window.set_tray_warning(TRAY_WARNING.into());
+        if let Ok(mut metrics) = metrics.lock() {
+            metrics.warning_visible = true;
+        }
+        let close_metrics = Arc::clone(&metrics);
+        window.window().on_close_requested(move || {
+            if let Ok(mut metrics) = close_metrics.lock() {
+                metrics.close_callback = true;
+            }
+            slint::CloseRequestResponse::KeepWindowShown
+        });
+        let close_window = window.as_weak();
+        let close_metrics = Arc::clone(&metrics);
+        window.on_close_to_tray(move || {
+            if let Some(window) = close_window.upgrade()
+                && let Ok(mut metrics) = close_metrics.lock()
+            {
+                metrics.close_callback = true;
+                metrics.window_accessible = window.window().is_visible();
+            }
+        });
+    }
+
+    window
+        .show()
+        .context("unable to show tray lifecycle window")?;
+    if automation {
+        schedule_tray_automation(
+            &window.as_weak(),
+            tray.as_ref().map(SpikeTray::as_weak),
+            Arc::clone(&metrics),
+        );
+    }
+    let event_loop = slint::run_event_loop_until_quit();
+    let metrics = metrics
+        .lock()
+        .map_err(|_| anyhow::anyhow!("tray lifecycle metrics poisoned"))?;
+    let fallback = unavailable_category.is_some();
+    let passed = if fallback {
+        metrics.close_callback
+            && metrics.window_accessible
+            && metrics.warning_visible
+            && metrics.quit_callback
+            && !metrics.failsafe_fired
+    } else {
+        metrics.close_callback
+            && metrics.hidden
+            && metrics.restore_callback
+            && metrics.restored
+            && metrics.quit_callback
+            && !metrics.failsafe_fired
+    } && event_loop.is_ok();
+
+    let mut evidence = Evidence::new(SpikeId::Platform, target);
+    evidence.measure("tray_status", unavailable_category.unwrap_or("available"))?;
+    evidence.measure("automation_close_callback", metrics.close_callback)?;
+    evidence.measure("automation_hide", metrics.hidden)?;
+    evidence.measure("automation_restore_callback", metrics.restore_callback)?;
+    evidence.measure("automation_restore", metrics.restored)?;
+    evidence.measure("automation_quit_callback", metrics.quit_callback)?;
+    evidence.measure("window_accessible", metrics.window_accessible)?;
+    evidence.measure("warning_visible", metrics.warning_visible)?;
+    evidence.measure("automation_failsafe_fired", metrics.failsafe_fired)?;
+    evidence.measure("renderer_backend", backend.evidence_name())?;
+    evidence.finish(
+        if passed { Verdict::Pass } else { Verdict::Fail },
+        started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+    );
+    super::write_finished_evidence(evidence_path, &evidence)?;
+
+    if passed && fallback {
+        println!("TRAY_FALLBACK=PASS window_accessible=true warning_visible=true");
+        Ok(())
+    } else if passed {
+        println!("TRAY=PASS hide=PASS restore=PASS quit=PASS");
+        Ok(())
+    } else {
+        anyhow::bail!("TRAY=FAIL lifecycle automation did not complete")
+    }
+}
+
+fn schedule_tray_automation(
+    window: &Weak<PreviewWindow>,
+    tray: Option<Weak<SpikeTray>>,
+    metrics: Arc<Mutex<TrayMetrics>>,
+) {
+    let close_window = window.clone();
+    slint::Timer::single_shot(Duration::from_millis(100), move || {
+        if let Some(window) = close_window.upgrade() {
+            // This invokes the Slint button callback on the UI event loop. The native close
+            // callback remains installed above for real window-manager close requests.
+            window.invoke_close_to_tray();
+        }
+    });
+    let quit_window = window.clone();
+    if let Some(tray) = tray {
+        let restore_tray = tray.clone();
+        slint::Timer::single_shot(Duration::from_millis(250), move || {
+            if let Some(tray) = restore_tray.upgrade() {
+                tray.invoke_restore();
+            }
+        });
+        slint::Timer::single_shot(Duration::from_millis(500), move || {
+            if let Some(tray) = tray.upgrade() {
+                tray.invoke_quit();
+            }
+        });
+    } else {
+        slint::Timer::single_shot(Duration::from_millis(250), move || {
+            if let Some(window) = quit_window.upgrade() {
+                window.invoke_quit();
+            }
+        });
+    }
+    slint::Timer::single_shot(Duration::from_secs(5), move || {
+        if let Ok(mut metrics) = metrics.lock() {
+            metrics.failsafe_fired = true;
+        }
+        let _ = slint::quit_event_loop();
+    });
+}
+
 pub(crate) fn run_preview(
     ffmpeg: PathBuf,
     input: PathBuf,

@@ -13,6 +13,17 @@ pub(crate) struct Cli {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     Version,
+    #[command(hide = true)]
+    ChildTree {
+        #[arg(long)]
+        malformed_report: bool,
+        #[arg(long)]
+        delay_report: bool,
+        #[arg(long)]
+        exit_before_report: bool,
+    },
+    #[command(hide = true)]
+    ChildLeaf,
     /// Render a bounded `FFmpeg` preview through Slint's main-thread event loop.
     Preview {
         #[arg(long)]
@@ -129,6 +140,15 @@ pub(crate) enum PlatformCommand {
         #[arg(long)]
         evidence: PathBuf,
     },
+    /// Exercise close-to-tray callbacks, explicit quit, and the no-tray fallback.
+    Tray {
+        #[arg(long)]
+        automation: bool,
+        #[arg(long)]
+        force_no_tray: bool,
+        #[arg(long)]
+        evidence: PathBuf,
+    },
 }
 
 fn parse_hardware_backend(input: &str) -> Result<Backend, String> {
@@ -161,6 +181,30 @@ mod tests {
             cli.command,
             Command::Platform {
                 command: PlatformCommand::Keyring { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_the_tray_lifecycle_fallback_contract() {
+        let cli = Cli::try_parse_from([
+            "ovayra-spike",
+            "platform",
+            "tray",
+            "--automation",
+            "--force-no-tray",
+            "--evidence",
+            "tray.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Platform {
+                command: PlatformCommand::Tray {
+                    automation: true,
+                    force_no_tray: true,
+                    ..
+                }
             }
         ));
     }

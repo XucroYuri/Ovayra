@@ -1,3 +1,5 @@
+import { Button } from "std-widgets.slint";
+
 export component PreviewWindow inherits Window {
     title: "Ovayra Preview Spike";
     width: 800px;
@@ -5,11 +7,15 @@ export component PreviewWindow inherits Window {
     in property <image> preview-frame;
     in property <string> status-text: "Waiting for frames";
     in property <string> metrics-text: "";
+    in property <string> tray-warning: "";
+    callback close-to-tray();
+    callback quit();
 
     VerticalLayout {
         padding: 16px;
         spacing: 8px;
         Text { text: root.status-text; font-size: 18px; }
+        Text { text: root.tray-warning; font-size: 14px; color: #a33; visible: root.tray-warning != ""; }
         Image {
             source: root.preview-frame;
             image-fit: contain;
@@ -17,6 +23,8 @@ export component PreviewWindow inherits Window {
             vertical-stretch: 1;
         }
         Text { text: root.metrics-text; font-size: 13px; color: #666; }
+        Button { text: "Close to tray"; clicked => { root.close-to-tray(); } }
+        Button { text: "Quit"; clicked => { root.quit(); } }
     }
 }
 
