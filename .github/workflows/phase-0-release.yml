@@ -8,8 +8,11 @@ on:
     paths: ["apps/**", "crates/**", "packaging/**", "scripts/**", "Cargo.toml", "Cargo.lock", ".github/workflows/phase-0-release.yml", ".github/workflows/phase-0-ffmpeg.yml"]
   workflow_dispatch:
     inputs:
-      ref:
-        description: "Immutable commit SHA with a successful phase-0-ffmpeg producer run"
+      release_tag:
+        description: "Existing phase-0-v* tag whose commit has a successful phase-0-ffmpeg producer"
+        required: true
+      producer_run_id:
+        description: "Successful phase-0-ffmpeg workflow-run ID for the tagged commit"
         required: true
   workflow_run:
     workflows: ["phase-0-ffmpeg"]
@@ -17,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   pr-unsigned:
@@ -32,7 +36,10 @@ jobs:
         run: cargo packager --help >/dev/null && test -f packaging/Packager.toml
 
   package-native:
-    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/phase-0-v')) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'phase-0-v')) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(inputs.release_tag, 'phase-0-v') && inputs.producer_run_id != '')
     strategy:
       fail-fast: false
       matrix:
@@ -45,31 +52,38 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.ref || github.sha }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.event_name == 'workflow_dispatch' && inputs.release_tag || github.sha }}
       - name: Download the validated Task 10 bundle artifact
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
-          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
-          REQUESTED_REF: ${{ inputs.ref }}
-          CHECKED_OUT_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.ref || github.sha }}
+          REQUESTED_RUN_ID: ${{ inputs.producer_run_id }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
+          case "$RELEASE_TAG" in phase-0-v*) ;; *) echo 'release must use a phase-0-v* tag' >&2; exit 1;; esac
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$CHECKED_OUT_SHA" || { echo 'release tag does not resolve to checkout' >&2; exit 1; }
           if [ "$EVENT_NAME" = workflow_run ]; then
-            test "$WORKFLOW_RUN_SHA" = "$CHECKED_OUT_SHA" || { echo 'producer SHA does not match checkout' >&2; exit 1; }
             RUN_ID="$WORKFLOW_RUN_ID"
+          elif [ "$EVENT_NAME" = workflow_dispatch ]; then
+            RUN_ID="$REQUESTED_RUN_ID"
           else
-            test -n "$CHECKED_OUT_SHA" || { echo 'an immutable SHA is required' >&2; exit 1; }
             RUN_ID=''
             for attempt in $(seq 1 60); do
-              candidate=$(gh run list --workflow phase-0-ffmpeg.yml --commit "$CHECKED_OUT_SHA" --status success --json databaseId,headSha --jq '.[] | select(.headSha == "'"$CHECKED_OUT_SHA"'") | .databaseId' | head -n 1 || true)
+              candidate=$(gh run list --workflow phase-0-ffmpeg.yml --commit "$CHECKED_OUT_SHA" --status success --json databaseId,headSha,event,conclusion --jq '.[] | select(.headSha == "'"$CHECKED_OUT_SHA"' and .event == "push" and .conclusion == "success") | .databaseId' | head -n 1 || true)
               if [ -n "$candidate" ]; then RUN_ID="$candidate"; break; fi
               sleep 10
             done
             test -n "$RUN_ID" || { echo "no successful Task 10 producer for $CHECKED_OUT_SHA" >&2; exit 1; }
           fi
+          producer="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID")"
+          test "$(jq -r '.conclusion' <<<"$producer")" = success || { echo 'producer did not conclude successfully' >&2; exit 1; }
+          test "$(jq -r '.event' <<<"$producer")" = push || { echo 'producer was not a push-triggered run' >&2; exit 1; }
+          test "$(jq -r '.head_sha' <<<"$producer")" = "$CHECKED_OUT_SHA" || { echo 'producer SHA does not match checkout' >&2; exit 1; }
+          test "$(jq -r '.name' <<<"$producer")" = phase-0-ffmpeg || { echo 'producer is not phase-0-ffmpeg' >&2; exit 1; }
           gh run download "$RUN_ID" --name "ffmpeg-${{ matrix.id }}-bundle" --dir target/ffmpeg-artifact
           test -d target/ffmpeg-artifact
       - name: Install exact cargo-packager
@@ -99,9 +113,14 @@ jobs:
           for input in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD CARGO_PACKAGER_SIGN_PRIVATE_KEY; do test -n "${!input}" || { echo "missing protected $input" >&2; exit 1; }; done
           app=$(find target/phase-0/packages -type d -name '*.app' -print -quit); dmg=$(find target/phase-0/packages -type f -name '*.dmg' -print -quit)
           test -n "$app" && test -n "$dmg"
+          while IFS= read -r nested; do codesign --force --options runtime --sign "$APPLE_SIGNING_IDENTITY" "$nested"; done < <(find "$app" -type f \( -perm -111 -o -name '*.dylib' \) -print)
           codesign --force --deep --options runtime --sign "$APPLE_SIGNING_IDENTITY" "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"; spctl --assess --type execute --verbose=4 "$app"
+          hdiutil create -ov -format UDZO -volname 'Ovayra Phase 0' -srcfolder "$app" "$dmg"
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
           xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
           xcrun stapler staple "$app"; xcrun stapler staple "$dmg"; codesign --verify --deep --strict --verbose=2 "$app"; spctl --assess --type execute --verbose=4 "$app"; xcrun stapler validate "$dmg"
+          mount_point=$(hdiutil attach -nobrowse -readonly "$dmg" | awk '/\/Volumes\// {print $3; exit}'); test -n "$mount_point"; mounted_app=$(find "$mount_point" -maxdepth 1 -type d -name '*.app' -print -quit); test -n "$mounted_app"; codesign --verify --deep --strict --verbose=2 "$mounted_app"; test -f "$mounted_app/Contents/Resources/ffmpeg/bin/ffmpeg"; test -f "$mounted_app/Contents/Resources/ffmpeg/bin/ffprobe"; test -f "$mounted_app/Contents/Resources/NOTICE.txt"; hdiutil detach "$mount_point"
           mkdir -p target/phase-0/release-artifacts
           COPYFILE_DISABLE=1 tar --format=ustar --uid 0 --gid 0 --numeric-owner -czf target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.app.tar.gz -C "$(dirname "$app")" "$(basename "$app")"
           cp "$dmg" target/phase-0/release-artifacts/ovayra-phase-0_0.0.1_darwin-aarch64.dmg
@@ -147,7 +166,8 @@ jobs:
     runs-on: ubuntu-24.04
     environment: phase-0-release-signing
     permissions:
-      contents: read
+      contents: write
+      actions: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -155,21 +175,16 @@ jobs:
           pattern: phase-0-*-unsigned
           merge-multiple: true
           path: target/phase-0/packages
-      - name: Refuse aggregation unless the protected update public key exists
-        env:
-          OVAYRA_UPDATE_PUBLIC_KEY: ${{ vars.OVAYRA_UPDATE_PUBLIC_KEY }}
-        run: test -n "$OVAYRA_UPDATE_PUBLIC_KEY"
+      - name: Verify the immutable committed Phase 0 public trust anchor
+        run: test -s packaging/update.pub && test "$(wc -l < packaging/update.pub)" -eq 2
       - name: Install exact cargo-packager
         run: cargo install cargo-packager --version 0.11.8 --locked
       - name: Generate and corruption-test manifest only from already signed normalized payloads
-        env:
-          OVAYRA_UPDATE_PUBLIC_KEY: ${{ vars.OVAYRA_UPDATE_PUBLIC_KEY }}
         run: |
           set -euo pipefail
-          printf '%s\n' "$OVAYRA_UPDATE_PUBLIC_KEY" > target/phase-0/update.pub
           cargo run --locked -p ovayra-spike -- release manifest --packages target/phase-0/packages --base-url https://updates.ovayra.com/phase-0/ --output target/phase-0/latest.json --version 0.0.1 --release-tag "$GITHUB_REF_NAME" --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          cargo run --locked -p ovayra-spike -- release verify-manifest --manifest target/phase-0/latest.json --packages target/phase-0/packages --public-key target/phase-0/update.pub --installed-version 0.0.0
-          cargo run --locked -p ovayra-spike -- release verify-tamper-rejection --manifest target/phase-0/latest.json --packages target/phase-0/packages --public-key target/phase-0/update.pub --installed-version 0.0.0
+          cargo run --locked -p ovayra-spike -- release verify-manifest --manifest target/phase-0/latest.json --packages target/phase-0/packages --public-key packaging/update.pub --installed-version 0.0.0
+          cargo run --locked -p ovayra-spike -- release verify-tamper-rejection --manifest target/phase-0/latest.json --packages target/phase-0/packages --public-key packaging/update.pub --installed-version 0.0.0
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: phase-0-signed-release-${{ github.ref_name }}

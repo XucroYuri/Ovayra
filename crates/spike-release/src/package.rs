@@ -83,12 +83,13 @@ impl PackageRelease {
                             url,
                             signature,
                             format,
-                            sha256: hex::encode(Sha256::digest(bytes)),
+                            sha256: hex::encode(Sha256::digest(&bytes)),
                         },
                     );
                 }
                 Some(ArtifactKind::Download) => {
                     let bytes = read_regular_bounded(&entry.path(), MAX_PACKAGE_BYTES)?;
+                    let signature = read_signature_for(&entry.path(), &name)?;
                     let url = base
                         .join(&name)
                         .map_err(|_| policy("package name cannot form download URL"))?;
@@ -96,7 +97,10 @@ impl PackageRelease {
                         name,
                         DownloadArtifact {
                             url: url.to_string(),
-                            sha256: hex::encode(Sha256::digest(bytes)),
+                            sha256: hex::encode(Sha256::digest(&bytes)),
+                            length: u64::try_from(bytes.len())
+                                .map_err(|_| policy("download length overflow"))?,
+                            signature,
                         },
                     );
                 }
@@ -153,16 +157,31 @@ impl PackageRelease {
                 platform.sha256(),
             )?;
         }
+        let downloads: Downloads = serde_json::from_str(&read_text_bounded(
+            &manifest.with_file_name("downloads.json"),
+            64 * 1024,
+        )?)
+        .map_err(ReleaseManifestError::from)?;
+        for download in downloads.artifacts.values() {
+            let url = Url::parse(&download.url).map_err(|_| policy("invalid download URL"))?;
+            let name = local_name(&url)?;
+            let payload = read_regular_bounded(&packages.join(name), MAX_PACKAGE_BYTES)?;
+            let signature = read_signature_for(&packages.join(name), name)?;
+            if signature != download.signature {
+                return Err(policy("download signature does not match metadata"));
+            }
+            verifier.verify_expected(&payload, &signature, download.length, &download.sha256)?;
+        }
         Ok(())
     }
 
-    /// Copies package files into a private temporary directory, changes one byte there, and proves
-    /// verification fails while the original package tree remains untouched.
+    /// Copies package files into a private temporary directory, corrupts both an updater and an
+    /// installer download there, and proves each corruption is rejected without touching source.
     ///
     /// # Errors
     ///
     /// Returns an error if the source manifest does not verify, copying cannot preserve a regular
-    /// package tree, or the altered temporary payload unexpectedly verifies.
+    /// package tree, a required payload class is absent, or an altered temporary payload verifies.
     pub fn verify_tamper_rejection(
         manifest: &Path,
         packages: &Path,
@@ -178,20 +197,45 @@ impl PackageRelease {
             &read_text_bounded(manifest, 64 * 1024)?,
             installed,
         )?;
-        let first = parsed
+        let updater = parsed
             .platforms()
             .values()
             .next()
             .ok_or_else(|| policy("manifest contains no updater targets"))?;
-        let path = copied.path().join(local_name(first.url())?);
-        let mut bytes = read_regular_bounded(&path, MAX_PACKAGE_BYTES)?;
-        let byte = bytes
+        let downloads: Downloads = serde_json::from_str(&read_text_bounded(
+            &manifest.with_file_name("downloads.json"),
+            64 * 1024,
+        )?)
+        .map_err(ReleaseManifestError::from)?;
+        let download = downloads
+            .artifacts
+            .values()
+            .next()
+            .ok_or_else(|| policy("downloads metadata contains no installer artifacts"))?;
+
+        let updater_path = copied.path().join(local_name(updater.url())?);
+        let original_updater = read_regular_bounded(&updater_path, MAX_PACKAGE_BYTES)?;
+        let mut corrupt_updater = original_updater.clone();
+        let byte = corrupt_updater
             .first_mut()
             .ok_or_else(|| policy("cannot corrupt empty package"))?;
         *byte ^= 1;
-        write_regular(&path, &bytes)?;
+        write_regular(&updater_path, &corrupt_updater)?;
         if Self::verify_manifest(manifest, copied.path(), public_key, installed).is_ok() {
-            return Err(policy("tampered package unexpectedly verified"));
+            return Err(policy("tampered updater unexpectedly verified"));
+        }
+        write_regular(&updater_path, &original_updater)?;
+
+        let download_url = Url::parse(&download.url).map_err(|_| policy("invalid download URL"))?;
+        let download_path = copied.path().join(local_name(&download_url)?);
+        let mut corrupt_download = read_regular_bounded(&download_path, MAX_PACKAGE_BYTES)?;
+        let byte = corrupt_download
+            .first_mut()
+            .ok_or_else(|| policy("cannot corrupt empty download"))?;
+        *byte ^= 1;
+        write_regular(&download_path, &corrupt_download)?;
+        if Self::verify_manifest(manifest, copied.path(), public_key, installed).is_ok() {
+            return Err(policy("tampered download unexpectedly verified"));
         }
         Ok(())
     }
@@ -378,12 +422,16 @@ fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), PackageE
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(serde::Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct DownloadArtifact {
     url: String,
     sha256: String,
+    length: u64,
+    signature: String,
 }
-#[derive(Serialize)]
+#[derive(serde::Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Downloads {
     version: String,
     artifacts: BTreeMap<String, DownloadArtifact>,

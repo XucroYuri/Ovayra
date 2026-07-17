@@ -14,6 +14,12 @@ const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 const MAX_NOTES_BYTES: usize = 4 * 1024;
 const MAX_SIGNATURE_BYTES: usize = 8 * 1024;
 const MAX_URL_BYTES: usize = 1024;
+const PINNED_UPDATE_PUBLIC_KEY: &str = include_str!("../../../packaging/update.pub");
+/// SHA-256 of the exact two-line public-key document, including its trailing newline.
+const PINNED_UPDATE_PUBLIC_KEY_SHA256: &str =
+    "041bc31a4b9cf035aab3a907b3abba166e5d6f7372f69451879607903ff9d841";
+/// The Minisign key ID recorded in the public-key document's trusted comment.
+const PINNED_UPDATE_KEY_ID: &str = "8D505269004B7685";
 const SUPPORTED_TARGETS: [(&str, UpdateFormat); 3] = [
     ("darwin-aarch64", UpdateFormat::App),
     ("windows-x86_64", UpdateFormat::Wix),
@@ -185,10 +191,35 @@ impl ReleaseManifest {
 pub struct ReleaseVerifier(PublicKey);
 
 impl ReleaseVerifier {
+    #[must_use]
+    pub fn pinned_public_key() -> &'static str {
+        PINNED_UPDATE_PUBLIC_KEY
+    }
+
+    /// Creates the immutable Phase 0 verifier from the committed trust anchor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the committed public-key document is malformed.
+    pub fn pinned() -> Result<Self, ReleaseManifestError> {
+        Self::new(PINNED_UPDATE_PUBLIC_KEY)
+    }
+
     /// # Errors
     ///
     /// Fails closed if the supplied document is not a Minisign public key.
     pub fn new(public_key: &str) -> Result<Self, ReleaseManifestError> {
+        if hex::encode(Sha256::digest(public_key.as_bytes())) != PINNED_UPDATE_PUBLIC_KEY_SHA256
+            || !public_key
+                .lines()
+                .next()
+                .is_some_and(|line| line.ends_with(PINNED_UPDATE_KEY_ID))
+            || public_key != PINNED_UPDATE_PUBLIC_KEY
+        {
+            return Err(policy(
+                "public key does not match the immutable Phase 0 trust anchor",
+            ));
+        }
         Ok(Self(PublicKey::decode(public_key)?))
     }
 

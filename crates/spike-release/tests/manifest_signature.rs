@@ -94,12 +94,7 @@ fn one_byte_package_signature_key_or_hash_tampering_is_rejected() {
     let mut changed_key = public_key.into_bytes();
     let index = changed_key.iter().rposition(|byte| *byte == b'A').unwrap();
     changed_key[index] = b'B';
-    assert!(
-        ReleaseVerifier::new(std::str::from_utf8(&changed_key).unwrap())
-            .unwrap()
-            .verify(&package, &signature)
-            .is_err()
-    );
+    assert!(ReleaseVerifier::new(std::str::from_utf8(&changed_key).unwrap()).is_err());
 }
 
 #[test]
@@ -141,7 +136,16 @@ fn package_manifest_uses_only_signed_updater_artifacts_and_keeps_deb_downloads_s
     assert_eq!(manifest.platform_count(), 3);
     let downloads = fs::read_to_string(output.path().join("downloads.json")).unwrap();
     assert!(downloads.contains(".deb"));
+    assert!(downloads.contains("signature"));
+    assert!(downloads.contains("length"));
     assert!(!fs::read_to_string(&latest).unwrap().contains(".deb"));
+    PackageRelease::verify_manifest(
+        &latest,
+        packages.path(),
+        &fs::read_to_string("../../packaging/update.pub").unwrap(),
+        &Version::parse(INSTALLED_VERSION).unwrap(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -152,6 +156,8 @@ fn package_manifest_verification_rejects_a_tampered_real_file_without_touching_t
         "ovayra-phase-0_0.0.2_darwin-aarch64.app.tar.gz",
         "ovayra-phase-0_0.0.2_windows-x86_64.msi",
         "ovayra-phase-0_0.0.2_linux-x86_64.AppImage",
+        "ovayra-phase-0_0.0.2_darwin-aarch64.dmg",
+        "ovayra-phase-0_0.0.2_linux-x86_64.deb",
     ] {
         fs::copy("tests/fixtures/update-test.bin", packages.path().join(name)).unwrap();
         fs::copy(

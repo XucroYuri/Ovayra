@@ -55,3 +55,21 @@ and staple macOS artifacts before creating the updater archive, Authenticode
 and verify the MSI before its updater signature, and sign Linux AppImage/deb.
 The protected tag aggregation accepts only those normalized signed artifacts,
 then produces/verifies/publishes `latest.json` and `downloads.json`.
+Its producer gate resolves the release tag to the checked-out commit and
+requires a successful, push-triggered `phase-0-ffmpeg` run for that exact SHA.
+Manual dispatch requires both that tag and the producer run ID, then performs
+the identical GitHub API provenance checks before it can download an artifact.
+
+## Phase 0 trust-anchor limitation
+
+`packaging/update.pub` is the immutable, embedded Phase 0 verifier anchor. The
+verifier pins the exact public-key bytes, SHA-256
+`041bc31a4b9cf035aab3a907b3abba166e5d6f7372f69451879607903ff9d841`,
+and Minisign key ID `8D505269004B7685`; a caller cannot substitute a key.
+It intentionally contains public material only and currently matches the
+non-production fixture key; it is not a commercial-release key. Protected
+signing must provide a private key that verifies against these exact bytes or
+the pinned verifier fails. Both updater and installer-download metadata bind
+length, SHA-256, and a detached signature, and the corruption check exercises
+each payload class. A key-rotation ADR and a separately provisioned production
+key are required before any commercial release claim.
