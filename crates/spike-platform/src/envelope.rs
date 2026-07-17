@@ -9,7 +9,11 @@ use zeroize::Zeroizing;
 use crate::{SecretStore, SecretStoreError};
 
 const MASTER_KEY_SERVICE: &str = "com.ovayra.desktop";
+/// AES-GCM appends its 128-bit authentication tag to the ciphertext.
+const AUTHENTICATION_TAG_BYTES: usize = 16;
+/// The complete stored ciphertext, including the authentication tag, is capped at 16 KiB.
 const MAX_CIPHERTEXT_BYTES: usize = 16 * 1024;
+const MAX_PLAINTEXT_BYTES: usize = MAX_CIPHERTEXT_BYTES - AUTHENTICATION_TAG_BYTES;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncryptedRecord {
@@ -47,18 +51,18 @@ impl EnvelopeCipher {
     /// Returns an error when the secret store fails or has an invalid key length.
     pub fn load_or_create(store: &impl SecretStore, account: &str) -> Result<Self, EnvelopeError> {
         let key = if let Some(key) = store.get(MASTER_KEY_SERVICE, account)? {
-            key
+            let key = Zeroizing::new(key);
+            let key: [u8; 32] = key
+                .as_slice()
+                .try_into()
+                .map_err(|_| EnvelopeError::InvalidKeyLength)?;
+            Zeroizing::new(key)
         } else {
-            let generated = <[u8; 32]>::generate();
-            store.set(MASTER_KEY_SERVICE, account, &generated)?;
-            generated.to_vec()
+            let key = Zeroizing::new(<[u8; 32]>::generate());
+            store.set(MASTER_KEY_SERVICE, account, key.as_slice())?;
+            key
         };
-        let key: [u8; 32] = key
-            .try_into()
-            .map_err(|_| EnvelopeError::InvalidKeyLength)?;
-        Ok(Self {
-            key: Zeroizing::new(key),
-        })
+        Ok(Self { key })
     }
 
     /// Encrypts a small record with AES-256-GCM and caller-selected associated data.
@@ -71,6 +75,9 @@ impl EnvelopeCipher {
         plaintext: &[u8],
         associated_data: &[u8],
     ) -> Result<EncryptedRecord, EnvelopeError> {
+        if plaintext.len() > MAX_PLAINTEXT_BYTES {
+            return Err(EnvelopeError::RecordTooLarge);
+        }
         let cipher = Aes256Gcm::new_from_slice(self.key.as_slice())
             .map_err(|_| EnvelopeError::InvalidKeyLength)?;
         let nonce = <[u8; 12]>::generate();

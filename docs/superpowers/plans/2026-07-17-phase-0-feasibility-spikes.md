@@ -1135,7 +1135,7 @@ and the Gemini encrypted-checkpoint consumer. Task 8 must not recreate or weaken
 - Modify: `apps/ovayra-spike/src/cli.rs`
 - Modify: `apps/ovayra-spike/src/main.rs`
 
-- [ ] **Step 1: Extend the existing deterministic envelope tests with boundary gates**
+- [x] **Step 1: Extend the existing deterministic envelope tests with boundary gates**
 
 ```rust
 use spike_platform::{EncryptedRecord, EnvelopeCipher, MemorySecretStore, SecretStore};
@@ -1150,7 +1150,7 @@ fn rejects_wrong_associated_data_and_oversized_records() {
 }
 ```
 
-- [ ] **Step 2: Audit and harden the secret-store boundary already used by Task 7**
+- [x] **Step 2: Audit and harden the secret-store boundary already used by Task 7**
 
 ```rust
 pub trait SecretStore {
@@ -1165,7 +1165,7 @@ pub trait SecretStore {
 mapping and explicit `NoDefaultStore`/locked/unavailable categories; never add a plaintext-file
 fallback.
 
-- [ ] **Step 3: Validate and deepen the AES-256-GCM envelope gates**
+- [x] **Step 3: Validate and deepen the AES-256-GCM envelope gates**
 
 The Task 7 master-key and envelope implementation must be retained: 32 random bytes generated
 through `aes_gcm::aead::Generate`, stored by the native store under service
@@ -1184,7 +1184,7 @@ pub struct EncryptedRecord {
 
 Reject versions other than `1`, nonce lengths other than 12 bytes, keys other than 32 bytes, authentication failure, and ciphertext larger than 16 KiB. Key material uses `zeroize` on drop; the platform crate consumes the workspace's exact `zeroize = "=1.9.0"` pin.
 
-- [ ] **Step 4: Run the expanded deterministic tests**
+- [x] **Step 4: Run the expanded deterministic tests**
 
 ```bash
 cargo test -p spike-platform --test envelope
@@ -1192,7 +1192,7 @@ cargo test -p spike-platform --test envelope
 
 Expected: round trip and tamper rejection pass; a serialized record contains no plaintext.
 
-- [ ] **Step 5: Add and run the native keyring smoke**
+- [x] **Step 5: Add and run the native keyring smoke**
 
 ```text
 ovayra-spike platform keyring --evidence docs/phase-0/evidence/keyring-local.json
@@ -1207,7 +1207,7 @@ cargo run -p ovayra-spike -- platform keyring \
 
 Expected: `KEYRING=PASS cleanup=PASS`. On supported Linux, run inside the real desktop D-Bus session with an unlocked Secret Service; `NoDefaultStore` fails the required device gate.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Cargo.toml Cargo.lock crates/spike-platform apps/ovayra-spike

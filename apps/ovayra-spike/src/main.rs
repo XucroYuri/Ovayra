@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use aes_gcm::aead::Generate;
 use anyhow::{Context, Result};
 use clap::Parser;
 use spike_contracts::{Evidence, SpikeId, TargetId, Verdict};
@@ -17,12 +18,17 @@ use spike_media::{
     AttemptOutcome, Backend, CpuFallback, DowngradeCode, ExecutionPolicy, FORCED_FAILURE_DEVICE,
     FfmpegError, FfmpegRunner, FfprobeReport, HardwarePlan, ProgressParser, content_sha256_bytes,
 };
-use spike_platform::{EncryptedRecord, EnvelopeCipher, OsSecretStore};
+use spike_platform::{
+    EncryptedRecord, EnvelopeCipher, OsSecretStore, SecretStore, SecretStoreError,
+};
+use zeroize::Zeroizing;
 
-use crate::cli::{Cli, Command, GeminiCommand, MediaCommand};
+use crate::cli::{Cli, Command, GeminiCommand, MediaCommand, PlatformCommand};
 use crate::gemini_orchestration::{ResumeRequest, resume_analyze_with_evidence, write_atomic};
 
 const UPLOAD_CHECKPOINT_ACCOUNT: &str = "phase-0-upload-checkpoint-v1";
+const KEYRING_SMOKE_SERVICE: &str = "com.ovayra.desktop";
+const KEYRING_SMOKE_ACCOUNT_PREFIX: &str = "phase-0-keyring-smoke";
 
 fn main() -> Result<()> {
     match Cli::parse().command {
@@ -110,8 +116,147 @@ fn main() -> Result<()> {
                     evidence,
                 },
         } => resume_gemini_upload(&input, &checkpoint, &model, &evidence)?,
+        Command::Platform {
+            command: PlatformCommand::Keyring { evidence },
+        } => keyring_smoke(&OsSecretStore, &evidence, evidence_target()?)?,
     }
     Ok(())
+}
+
+/// Exercises the production `SecretStore` boundary without putting a credential identifier or
+/// bytes in evidence. The cleanup guard provides best-effort deletion during unwinding.
+fn keyring_smoke(store: &impl SecretStore, evidence_path: &Path, target: TargetId) -> Result<()> {
+    let started = Instant::now();
+    let secret = Zeroizing::new(<[u8; 32]>::generate());
+    let account_id = u128::from_le_bytes(
+        secret[..16]
+            .try_into()
+            .expect("the fixed random account identifier has 16 bytes"),
+    );
+    let account = format!("{KEYRING_SMOKE_ACCOUNT_PREFIX}-{account_id:032x}");
+    let mut cleanup = KeyringCleanup::new(store, account);
+    let mut evidence = Evidence::new(SpikeId::Platform, target);
+    let mut operation_error = None;
+
+    let set_started = Instant::now();
+    match store.set(KEYRING_SMOKE_SERVICE, cleanup.account(), secret.as_slice()) {
+        Ok(()) => evidence.measure("write_status", "pass")?,
+        Err(error) => {
+            evidence.measure("write_status", error.category())?;
+            operation_error = Some(error);
+        }
+    }
+    evidence.measure("set_duration_ms", duration_ms(set_started))?;
+
+    if operation_error.is_none() {
+        let get_started = Instant::now();
+        match store.get(KEYRING_SMOKE_SERVICE, cleanup.account()) {
+            Ok(Some(value)) => {
+                let value = Zeroizing::new(value);
+                if constant_time_eq(secret.as_slice(), value.as_slice()) {
+                    evidence.measure("read_status", "pass")?;
+                } else {
+                    evidence.measure("read_status", "mismatch")?;
+                    operation_error = Some(SecretStoreError::Rejected);
+                }
+            }
+            Ok(None) => {
+                evidence.measure("read_status", "missing")?;
+                operation_error = Some(SecretStoreError::Rejected);
+            }
+            Err(error) => {
+                evidence.measure("read_status", error.category())?;
+                operation_error = Some(error);
+            }
+        }
+        evidence.measure("get_duration_ms", duration_ms(get_started))?;
+    }
+
+    let cleanup_started = Instant::now();
+    let cleanup_error = cleanup.cleanup_and_confirm().err();
+    evidence.measure("cleanup_duration_ms", duration_ms(cleanup_started))?;
+    evidence.measure(
+        "cleanup_status",
+        cleanup_error
+            .as_ref()
+            .map_or("pass", SecretStoreError::category),
+    )?;
+    evidence.finish(
+        if operation_error.is_none() && cleanup_error.is_none() {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        },
+        duration_ms(started),
+    );
+    write_finished_evidence(evidence_path, &evidence)?;
+
+    if let Some(error) = cleanup_error {
+        anyhow::bail!("keyring smoke cleanup failed ({})", error.category());
+    }
+    if let Some(error) = operation_error {
+        anyhow::bail!("keyring smoke failed ({})", error.category());
+    }
+    println!("KEYRING=PASS cleanup=PASS");
+    Ok(())
+}
+
+struct KeyringCleanup<'a, Store: SecretStore> {
+    store: &'a Store,
+    account: String,
+    armed: bool,
+}
+
+impl<'a, Store: SecretStore> KeyringCleanup<'a, Store> {
+    fn new(store: &'a Store, account: String) -> Self {
+        Self {
+            store,
+            account,
+            armed: true,
+        }
+    }
+
+    fn account(&self) -> &str {
+        &self.account
+    }
+
+    fn cleanup_and_confirm(&mut self) -> Result<(), SecretStoreError> {
+        self.store.delete(KEYRING_SMOKE_SERVICE, &self.account)?;
+        match self.store.get(KEYRING_SMOKE_SERVICE, &self.account)? {
+            None => {
+                self.armed = false;
+                Ok(())
+            }
+            Some(value) => {
+                drop(Zeroizing::new(value));
+                Err(SecretStoreError::Rejected)
+            }
+        }
+    }
+}
+
+impl<Store: SecretStore> Drop for KeyringCleanup<'_, Store> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.store.delete(KEYRING_SMOKE_SERVICE, &self.account);
+        }
+    }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
+}
+
+fn duration_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 fn stage_gemini_upload(
@@ -506,7 +651,31 @@ fn write_evidence_atomic(destination: &Path, json: &str) -> std::io::Result<()> 
 mod tests {
     use std::fs;
 
-    use super::{evidence_target_from_values, write_evidence_atomic};
+    use spike_contracts::TargetId;
+    use spike_platform::MemorySecretStore;
+
+    use super::{evidence_target_from_values, keyring_smoke, write_evidence_atomic};
+
+    #[test]
+    fn keyring_smoke_round_trips_binary_data_and_writes_redacted_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let evidence_path = directory.path().join("keyring.json");
+        let store = MemorySecretStore::default();
+
+        keyring_smoke(
+            &store,
+            &evidence_path,
+            TargetId::new("macos-arm64-vt").unwrap(),
+        )
+        .unwrap();
+
+        let evidence = fs::read_to_string(evidence_path).unwrap();
+        assert!(evidence.contains("\"spike\": \"platform\""));
+        assert!(evidence.contains("\"verdict\": \"pass\""));
+        assert!(evidence.contains("\"cleanup_status\": \"pass\""));
+        assert!(!evidence.contains("account"));
+        assert!(!evidence.contains("secret"));
+    }
 
     #[test]
     fn atomically_replaces_evidence_without_leaving_temporary_files() {

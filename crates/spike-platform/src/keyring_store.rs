@@ -36,6 +36,19 @@ pub enum SecretStoreError {
     MemoryLock,
 }
 
+impl SecretStoreError {
+    /// Returns the stable category suitable for redacted user-facing evidence.
+    #[must_use]
+    pub const fn category(&self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::Locked => "locked",
+            Self::Rejected => "rejected",
+            Self::MemoryLock => "memory_lock",
+        }
+    }
+}
+
 /// Native OS credential store; it deliberately has no plaintext fallback.
 #[derive(Debug, Default)]
 pub struct OsSecretStore;
@@ -43,11 +56,7 @@ pub struct OsSecretStore;
 impl SecretStore for OsSecretStore {
     fn get(&self, service: &str, account: &str) -> Result<Option<Vec<u8>>, SecretStoreError> {
         let entry = keyring::v1::Entry::new(service, account).map_err(|error| map_error(&error))?;
-        match entry.get_secret() {
-            Ok(value) => Ok(Some(value)),
-            Err(keyring::v1::Error::NoEntry) => Ok(None),
-            Err(error) => Err(map_error(&error)),
-        }
+        map_get_result(entry.get_secret())
     }
 
     fn set(&self, service: &str, account: &str, value: &[u8]) -> Result<(), SecretStoreError> {
@@ -71,8 +80,19 @@ fn map_error(error: &keyring::v1::Error) -> SecretStoreError {
         keyring::v1::Error::NoDefaultStore | keyring::v1::Error::NotSupportedByStore(_) => {
             SecretStoreError::Unavailable
         }
+        keyring::v1::Error::PlatformFailure(_) => SecretStoreError::Unavailable,
         keyring::v1::Error::NoStorageAccess(_) => SecretStoreError::Locked,
         _ => SecretStoreError::Rejected,
+    }
+}
+
+fn map_get_result(
+    result: keyring::v1::Result<Vec<u8>>,
+) -> Result<Option<Vec<u8>>, SecretStoreError> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::v1::Error::NoEntry) => Ok(None),
+        Err(error) => Err(map_error(&error)),
     }
 }
 
@@ -109,5 +129,41 @@ impl SecretStore for MemorySecretStore {
             .map_err(|_| SecretStoreError::MemoryLock)?;
         values.remove(&(service.to_owned(), account.to_owned()));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::{map_error, map_get_result};
+
+    #[test]
+    fn native_backend_errors_map_to_stable_redacted_categories() {
+        let unavailable = map_error(&keyring::v1::Error::NoDefaultStore);
+        let locked = map_error(&keyring::v1::Error::NoStorageAccess(Box::new(
+            io::Error::other("backend detail must not escape"),
+        )));
+        let rejected = map_error(&keyring::v1::Error::Invalid(
+            "account detail".to_owned(),
+            "backend detail must not escape".to_owned(),
+        ));
+
+        assert_eq!(unavailable.category(), "unavailable");
+        assert_eq!(locked.category(), "locked");
+        assert_eq!(rejected.category(), "rejected");
+        assert!(
+            !rejected
+                .to_string()
+                .contains("backend detail must not escape")
+        );
+    }
+
+    #[test]
+    fn missing_credential_is_not_an_error_category() {
+        assert_eq!(
+            map_get_result(Err(keyring::v1::Error::NoEntry)).unwrap(),
+            None
+        );
     }
 }

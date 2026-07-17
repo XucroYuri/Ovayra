@@ -34,6 +34,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: GeminiCommand,
     },
+    Platform {
+        #[command(subcommand)]
+        command: PlatformCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -118,6 +122,15 @@ pub(crate) enum GeminiCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum PlatformCommand {
+    /// Exercise the native OS keyring with a disposable binary credential.
+    Keyring {
+        #[arg(long)]
+        evidence: PathBuf,
+    },
+}
+
 fn parse_hardware_backend(input: &str) -> Result<Backend, String> {
     let backend = input.parse::<Backend>().map_err(str::to_owned)?;
     if backend.is_cpu() {
@@ -132,7 +145,25 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Cli, Command, GeminiCommand, MediaCommand};
+    use super::{Cli, Command, GeminiCommand, MediaCommand, PlatformCommand};
+
+    #[test]
+    fn parses_the_keyring_smoke_evidence_contract() {
+        let cli = Cli::try_parse_from([
+            "ovayra-spike",
+            "platform",
+            "keyring",
+            "--evidence",
+            "keyring.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Platform {
+                command: PlatformCommand::Keyring { .. }
+            }
+        ));
+    }
 
     #[test]
     fn gemini_commands_require_a_real_two_process_checkpoint_contract() {
