@@ -242,19 +242,21 @@ fn resume_gemini_upload(
         )?;
     }
     evidence.measure(
-        "remote_delete",
+        "remote_cleanup_state",
         if remote_cleanup.is_ok() {
-            "PASS"
+            "DELETED"
         } else {
-            "FAIL"
+            "FAILED"
         },
     )?;
     evidence.measure(
-        "checkpoint_cleanup",
-        if checkpoint_cleanup.is_ok() {
-            "PASS"
+        "checkpoint_cleanup_state",
+        if remote_cleanup.is_err() {
+            "RETAINED_FOR_RECOVERY"
+        } else if checkpoint_cleanup.is_ok() {
+            "DELETED"
         } else {
-            "FAIL"
+            "FAILED"
         },
     )?;
     evidence.finish(

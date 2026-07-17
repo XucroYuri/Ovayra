@@ -66,6 +66,56 @@ async fn rejects_non_final_chunks_that_do_not_honor_server_granularity() {
 }
 
 #[tokio::test]
+async fn chunk_retries_429_and_5xx_but_not_4xx() {
+    for status in [429, 503] {
+        let server = MockServer::start().await;
+        let session_url = format!("{}/session/1", server.uri());
+        Mock::given(matchers::path("/upload/v1beta/files"))
+            .respond_with(
+                ResponseTemplate::new(200).insert_header("x-goog-upload-url", session_url),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(matchers::header("x-goog-upload-command", "upload"))
+            .respond_with(ResponseTemplate::new(status).insert_header("retry-after", "0"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::header("x-goog-upload-command", "upload"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let client = no_wait_client(&server);
+        let session = client
+            .start_upload("synthetic", "video/webm", 4)
+            .await
+            .unwrap();
+        assert!(client.upload_chunk(&session, 0, b"1234").await.is_ok());
+    }
+    let server = MockServer::start().await;
+    let session_url = format!("{}/session/1", server.uri());
+    Mock::given(matchers::path("/upload/v1beta/files"))
+        .respond_with(ResponseTemplate::new(200).insert_header("x-goog-upload-url", session_url))
+        .mount(&server)
+        .await;
+    Mock::given(matchers::header("x-goog-upload-command", "upload"))
+        .respond_with(ResponseTemplate::new(400))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(matchers::header("x-goog-upload-command", "upload"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let client = no_wait_client(&server);
+    let session = client
+        .start_upload("synthetic", "video/webm", 4)
+        .await
+        .unwrap();
+    assert!(client.upload_chunk(&session, 0, b"1234").await.is_err());
+}
+
+#[tokio::test]
 async fn sends_chunks_queries_finalizes_and_never_leaks_sensitive_values() {
     let server = MockServer::start().await;
     let upload_url = format!("{}/session/sensitive-upload-url", server.uri());
@@ -277,4 +327,26 @@ async fn polling_times_out_and_failed_files_are_terminal() {
         .await
         .unwrap_err();
     assert!(!format!("{error:?}").contains("api-key-that-must-not-leak"));
+}
+
+#[tokio::test]
+async fn decoded_empty_generation_returns_redacted_failure_metrics() {
+    let server = MockServer::start().await;
+    Mock::given(matchers::method("POST"))
+        .and(matchers::path("/v1beta/models/gemini-3.1-flash-lite:generateContent"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP","index":0,"safetyRatings":[]}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"modelVersion":"gemini-3.1-flash-lite","responseId":"redacted"})))
+        .mount(&server).await;
+    let remote = spike_gemini::RemoteFile {
+        name: "files/1".to_owned(),
+        uri: "gemini://files/1".to_owned(),
+        mime_type: "video/webm".to_owned(),
+        state: FileState::Active,
+    };
+    let result = client(&server)
+        .generate_content(&remote, "gemini-3.1-flash-lite")
+        .await
+        .unwrap();
+    assert!(!result.analysis_nonempty());
+    assert_eq!(result.status(), 200);
+    assert!(result.response_bytes() > 0);
 }

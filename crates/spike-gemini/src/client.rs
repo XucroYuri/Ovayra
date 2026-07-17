@@ -225,30 +225,34 @@ impl GeminiClient {
         let expected = offset
             .checked_add(u64::try_from(chunk.len()).map_err(|_| GeminiError::Protocol)?)
             .ok_or(GeminiError::Protocol)?;
-        match self.upload_once(session, offset, chunk, "upload").await {
-            Ok(()) => Ok(()),
-            Err(GeminiError::Transport) => {
-                let observed = self.query_offset(session).await?;
-                if observed >= expected {
-                    return Ok(());
+        for attempt in 0..self.retry_policy.max_attempts {
+            match self.upload_once(session, offset, chunk, "upload").await {
+                Ok(response) if response.status().is_success() => return Ok(()),
+                Ok(response)
+                    if transient(response.status())
+                        && attempt + 1 < self.retry_policy.max_attempts =>
+                {
+                    sleep(retry_delay(
+                        response.headers(),
+                        attempt,
+                        self.retry_policy.max_delay,
+                    ))
+                    .await;
                 }
-                if observed != offset {
-                    return Err(GeminiError::Protocol);
-                }
-                match self.upload_once(session, offset, chunk, "upload").await {
-                    Ok(()) => Ok(()),
-                    Err(GeminiError::Transport) => {
-                        if self.query_offset(session).await? >= expected {
-                            Ok(())
-                        } else {
-                            Err(GeminiError::Transport)
-                        }
+                Ok(response) => return Err(GeminiError::HttpStatus(response.status().as_u16())),
+                Err(GeminiError::Transport) => {
+                    let observed = self.query_offset(session).await?;
+                    if observed == expected {
+                        return Ok(());
                     }
-                    Err(error) => Err(error),
+                    if observed != offset {
+                        return Err(GeminiError::Protocol);
+                    }
                 }
+                Err(error) => return Err(error),
             }
-            Err(error) => Err(error),
         }
+        Err(GeminiError::Transport)
     }
 
     pub async fn finalize_chunk(
@@ -350,9 +354,6 @@ impl GeminiClient {
             .flat_map(|candidate| candidate.content.parts)
             .filter_map(|part| part.text)
             .any(|text| !text.trim().is_empty());
-        if !analysis_nonempty {
-            return Err(GeminiError::EmptyAnalysis);
-        }
         Ok(GenerationResult {
             analysis_nonempty,
             response_bytes: response_bytes.len(),
@@ -441,9 +442,8 @@ impl GeminiClient {
         offset: u64,
         chunk: &[u8],
         command: &'static str,
-    ) -> Result<(), GeminiError> {
-        let response = self
-            .client
+    ) -> Result<Response, GeminiError> {
+        self.client
             .post(session.url.clone())
             .header("x-goog-api-key", &self.api_key)
             .header("x-goog-upload-command", command)
@@ -451,12 +451,7 @@ impl GeminiClient {
             .body(chunk.to_vec())
             .send()
             .await
-            .map_err(|_| GeminiError::Transport)?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(GeminiError::HttpStatus(response.status().as_u16()))
-        }
+            .map_err(|_| GeminiError::Transport)
     }
 
     async fn get_file(&self, name: &str) -> Result<RemoteFile, GeminiError> {

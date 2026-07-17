@@ -11,8 +11,8 @@ Base commit: `b38ed55`
   terminal analysis failure, and redacted generation measurements were added through failing
   contract/application-orchestration coverage.
 - GREEN: `cargo test -p spike-gemini --test resumable_contract -- --test-threads=1`
-  passes 7 wiremock contract tests, including capped nonzero `Retry-After` and no blind
-  transport replay.
+  passes 9 wiremock contract tests, including bounded chunk `429`/`5xx` retries, chunk
+  `4xx` refusal, capped nonzero `Retry-After`, and redacted empty-generation metrics.
 - GREEN: application orchestration tests prove a server offset supersedes the checkpoint hint
   and that a terminal analysis failure still performs remote cleanup.
 - GREEN: `cargo test -p spike-platform --test envelope` passes encrypted round-trip and
