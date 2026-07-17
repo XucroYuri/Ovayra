@@ -435,7 +435,11 @@ pub(crate) fn write_atomic(destination: &Path, json: &str) -> std::io::Result<()
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, time::Duration};
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     use spike_contracts::TargetId;
     use spike_gemini::{GeminiClient, PollPolicy, RetryPolicy};
@@ -530,6 +534,145 @@ mod tests {
         assert!(evidence.contains("OFFSET_MISALIGNED"));
         assert!(evidence.contains("\"observed_server_offset\": 2"));
         assert_redacted(&evidence);
+    }
+
+    #[tokio::test]
+    async fn resume_beyond_input_offset_writes_redacted_failed_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoint_path = dir.path().join("checkpoint.json");
+        let evidence_path = dir.path().join("evidence.json");
+        let cipher =
+            EnvelopeCipher::load_or_create(&MemorySecretStore::default(), "beyond-input").unwrap();
+        let server = MockServer::start().await;
+        let client = checkpoint(&server, &cipher, &checkpoint_path, 0, 4).await;
+        Mock::given(matchers::header("x-goog-upload-command", "query"))
+            .respond_with(
+                ResponseTemplate::new(200).insert_header("x-goog-upload-size-received", "9"),
+            )
+            .mount(&server)
+            .await;
+        let error = resume_analyze_with_evidence(ResumeRequest {
+            client: &client,
+            cipher: &cipher,
+            input: b"12345678",
+            checkpoint_path: &checkpoint_path,
+            model: "gemini-3.1-flash-lite",
+            evidence_path: &evidence_path,
+            target: target(),
+            poll_policy: PollPolicy::bounded(Duration::ZERO, Duration::ZERO),
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.outcome.observed_server_offset, Some(9));
+        assert_eq!(error.outcome.offset_mismatch, Some(true));
+        assert_eq!(
+            error.outcome.failure_category,
+            Some(ResumeFailureCategory::OffsetBeyondInput)
+        );
+        let evidence = fs::read_to_string(&evidence_path).unwrap();
+        assert!(evidence.contains("OFFSET_BEYOND_INPUT"));
+        assert_redacted(&evidence);
+    }
+
+    #[tokio::test]
+    async fn omitted_granularity_uses_eight_mib_chunk_then_queries_before_finalizing() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoint_path = dir.path().join("checkpoint.json");
+        let evidence_path = dir.path().join("evidence.json");
+        let cipher =
+            EnvelopeCipher::load_or_create(&MemorySecretStore::default(), "fallback-chunk")
+                .unwrap();
+        let server = MockServer::start().await;
+        let session_url = format!("{}/session/sensitive-upload-url", server.uri());
+        Mock::given(matchers::path("/upload/v1beta/files"))
+            .respond_with(
+                ResponseTemplate::new(200).insert_header("x-goog-upload-url", session_url),
+            )
+            .mount(&server)
+            .await;
+        let client = test_client(&server);
+        let input = vec![7_u8; 8 * 1024 * 1024 + 5];
+        let session = client
+            .start_upload("synthetic", "video/webm", input.len() as u64)
+            .await
+            .unwrap();
+        let record = client.checkpoint(&cipher, &session, 0).unwrap();
+        write_atomic(&checkpoint_path, &serde_json::to_string(&record).unwrap()).unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let query_count = Arc::new(Mutex::new(0_u8));
+        Mock::given(matchers::path("/session/sensitive-upload-url"))
+            .respond_with({
+                let requests = Arc::clone(&requests);
+                let query_count = Arc::clone(&query_count);
+                move |request: &wiremock::Request| {
+                    let command = request
+                        .headers
+                        .get("x-goog-upload-command")
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_owned();
+                    let offset = request
+                        .headers
+                        .get("x-goog-upload-offset")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned);
+                    requests
+                        .lock()
+                        .unwrap()
+                        .push((command.clone(), offset, request.body.len()));
+                    if command == "query" {
+                        let mut query_count = query_count.lock().unwrap();
+                        *query_count += 1;
+                        ResponseTemplate::new(200).insert_header(
+                            "x-goog-upload-size-received",
+                            if *query_count == 1 { "0" } else { "8388608" },
+                        )
+                    } else if command == "upload, finalize" {
+                        ResponseTemplate::new(200).set_body_json(serde_json::json!({"file":{"name":"files/1","uri":"gemini://files/1","mimeType":"video/webm","state":"PROCESSING"}}))
+                    } else {
+                        ResponseTemplate::new(200)
+                    }
+                }
+            })
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/v1beta/files/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"name":"files/1","uri":"gemini://files/1","mimeType":"video/webm","state":"ACTIVE"})))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1beta/models/gemini-3.1-flash-lite:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"candidates":[{"content":{"role":"model","parts":[{"text":"safe summary"}]}}],"modelVersion":"gemini-3.1-flash-lite"})))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("DELETE"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        let outcome = resume_analyze_with_evidence(ResumeRequest {
+            client: &client,
+            cipher: &cipher,
+            input: &input,
+            checkpoint_path: &checkpoint_path,
+            model: "gemini-3.1-flash-lite",
+            evidence_path: &evidence_path,
+            target: target(),
+            poll_policy: PollPolicy::bounded(Duration::ZERO, Duration::ZERO),
+        })
+        .await
+        .unwrap();
+        assert_eq!(outcome.observed_server_offset, Some(0));
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![
+                ("query".to_owned(), None, 0),
+                ("upload".to_owned(), Some("0".to_owned()), 8 * 1024 * 1024),
+                ("query".to_owned(), None, 0),
+                ("upload, finalize".to_owned(), Some("8388608".to_owned()), 5,),
+            ]
+        );
     }
 
     #[tokio::test]

@@ -11,7 +11,7 @@ Base commit: `b38ed55`
   terminal analysis failure, and redacted generation measurements were added through failing
   contract/application-orchestration coverage.
 - GREEN: `cargo test -p spike-gemini --test resumable_contract -- --test-threads=1`
-  passes 9 wiremock contract tests, including bounded chunk `429`/`5xx` retries, chunk
+  passes 12 resumable contract tests (Wiremock and bounded local fault-server cases), including bounded chunk `429`/`5xx` retries, chunk
   `4xx` refusal, capped nonzero `Retry-After`, and redacted empty-generation metrics.
 - GREEN: application orchestration tests prove a server offset supersedes the checkpoint hint
   and that a terminal analysis failure still performs remote cleanup.
@@ -54,8 +54,10 @@ pre-existing workspace policy issue is outside Task 7's dependency pins.
 | Ambiguous chunk lower/higher offsets fail closed | `ambiguous_chunk_lower_observed_offset_fails_without_stale_replay`; `ambiguous_chunk_higher_observed_offset_fails_without_stale_replay` | same command |
 | Persistent processing timeout with bounded policy | `persistent_processing_returns_poll_timeout` | same command; test loops 20 times |
 | Empty decoded generation is redacted metrics | `decoded_empty_generation_returns_redacted_failure_metrics` | same command |
-| Misaligned or beyond-size server offset fails with redacted evidence | `resume_misaligned_offset_writes_redacted_failed_evidence` | `cargo test -p ovayra-spike -- --test-threads=1` |
+| Misaligned server offset fails with redacted evidence | `resume_misaligned_offset_writes_redacted_failed_evidence` | `cargo test -p ovayra-spike -- --test-threads=1` |
+| Beyond-input server offset fails with redacted evidence | `resume_beyond_input_offset_writes_redacted_failed_evidence` | same command |
 | Mismatched offset continuation failure is persisted before return | `resume_continuation_failure_after_offset_mismatch_writes_failed_evidence` | same command |
+| Omitted upload granularity uses 8 MiB chunks and re-queries before finalization | `omitted_granularity_uses_eight_mib_chunk_then_queries_before_finalizing` | same command |
 | Failed remote deletion retains encrypted checkpoint for recovery | `remote_delete_failure_retains_checkpoint_and_writes_recovery_evidence` | same command |
 | Empty generated analysis records redacted response metrics then fails | `empty_generation_writes_redacted_metrics_and_returns_failure` | same command |
 
