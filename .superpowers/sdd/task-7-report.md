@@ -7,8 +7,14 @@ Base commit: `b38ed55`
 - RED: `cargo test -p spike-platform --test envelope` failed with unresolved
   `EnvelopeCipher` and `MemorySecretStore`; `cargo test -p spike-gemini --test
   resumable_contract` then failed because the Gemini client and DTOs did not exist.
+- RED review follow-up: retry bounds, server-authoritative mismatch recovery, cleanup after
+  terminal analysis failure, and redacted generation measurements were added through failing
+  contract/application-orchestration coverage.
 - GREEN: `cargo test -p spike-gemini --test resumable_contract -- --test-threads=1`
-  passes 6 wiremock contract tests.
+  passes 7 wiremock contract tests, including capped nonzero `Retry-After` and no blind
+  transport replay.
+- GREEN: application orchestration tests prove a server offset supersedes the checkpoint hint
+  and that a terminal analysis failure still performs remote cleanup.
 - GREEN: `cargo test -p spike-platform --test envelope` passes encrypted round-trip and
   tamper-rejection tests.
 - GREEN: `cargo test -p spike-gemini -p spike-platform -p ovayra-spike` passes.
@@ -33,6 +39,8 @@ sources passed, while licenses failed because the existing deny configuration do
 not allow workspace-wide standard licenses (including MIT and Apache-2.0). This
 pre-existing workspace policy issue is outside Task 7's dependency pins.
 
-## Commit
+## Commits
 
-Pending final atomic Task 7 commit.
+- Initial implementation: `ba24fd2180b2c838e14df0c803d1917c1d607b8c`.
+- Review-remediation candidate: recorded by the enclosing atomic commit; this report does not
+  claim its own self-referential final hash.

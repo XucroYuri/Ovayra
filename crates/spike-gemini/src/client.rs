@@ -22,12 +22,75 @@ const DEFAULT_API_BASE: &str = "https://generativelanguage.googleapis.com";
 const CHECKPOINT_AAD: &[u8] = b"ovayra-upload-session-v1";
 const FALLBACK_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_ATTEMPTS: u8 = 3;
+const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// Bounded retry behavior for transient Gemini HTTP responses.
+#[derive(Debug, Clone, Copy)]
+pub struct RetryPolicy {
+    max_attempts: u8,
+    max_delay: Duration,
+}
+
+impl RetryPolicy {
+    #[must_use]
+    pub const fn bounded(max_attempts: u8, max_delay: Duration) -> Self {
+        Self {
+            max_attempts,
+            max_delay,
+        }
+    }
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self::bounded(MAX_ATTEMPTS, Duration::from_secs(2))
+    }
+}
+
+/// Redacted generation measurements; analysis text is intentionally not exposed.
+pub struct GenerationResult {
+    analysis_nonempty: bool,
+    response_bytes: usize,
+    status: u16,
+    model: String,
+    latency: Duration,
+}
+
+impl fmt::Debug for GenerationResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("GenerationResult([REDACTED])")
+    }
+}
+
+impl GenerationResult {
+    #[must_use]
+    pub const fn analysis_nonempty(&self) -> bool {
+        self.analysis_nonempty
+    }
+    #[must_use]
+    pub const fn response_bytes(&self) -> usize {
+        self.response_bytes
+    }
+    #[must_use]
+    pub const fn status(&self) -> u16 {
+        self.status
+    }
+    #[must_use]
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+    #[must_use]
+    pub const fn latency(&self) -> Duration {
+        self.latency
+    }
+}
 
 pub struct GeminiClient {
     client: Client,
     api_key: String,
     api_base: Url,
     upload_base: Url,
+    retry_policy: RetryPolicy,
 }
 
 impl fmt::Debug for GeminiClient {
@@ -50,6 +113,8 @@ pub enum GeminiError {
     Transport,
     #[error("Gemini request response could not be decoded")]
     Decode,
+    #[error("Gemini response exceeded the bounded size limit")]
+    ResponseTooLarge,
     #[error("Gemini polling timed out")]
     PollTimeout,
     #[error("Gemini remote file entered FAILED state")]
@@ -73,6 +138,20 @@ impl GeminiClient {
         api_base: &str,
         upload_base: &str,
     ) -> Result<Self, GeminiError> {
+        Self::for_endpoints_with_retry_policy(
+            api_key,
+            api_base,
+            upload_base,
+            RetryPolicy::default(),
+        )
+    }
+
+    pub fn for_endpoints_with_retry_policy(
+        api_key: impl Into<String>,
+        api_base: &str,
+        upload_base: &str,
+        retry_policy: RetryPolicy,
+    ) -> Result<Self, GeminiError> {
         let api_base = Url::parse(api_base).map_err(|_| GeminiError::InvalidEndpoint)?;
         let upload_base = Url::parse(upload_base).map_err(|_| GeminiError::InvalidEndpoint)?;
         let client = Client::builder()
@@ -84,6 +163,7 @@ impl GeminiClient {
             api_key: api_key.into(),
             api_base,
             upload_base,
+            retry_policy,
         })
     }
 
@@ -142,9 +222,33 @@ impl GeminiClient {
         }) {
             return Err(GeminiError::ChunkMisaligned);
         }
-        self.upload(session, offset, chunk, "upload")
-            .await
-            .map(|_| ())
+        let expected = offset
+            .checked_add(u64::try_from(chunk.len()).map_err(|_| GeminiError::Protocol)?)
+            .ok_or(GeminiError::Protocol)?;
+        match self.upload_once(session, offset, chunk, "upload").await {
+            Ok(()) => Ok(()),
+            Err(GeminiError::Transport) => {
+                let observed = self.query_offset(session).await?;
+                if observed >= expected {
+                    return Ok(());
+                }
+                if observed != offset {
+                    return Err(GeminiError::Protocol);
+                }
+                match self.upload_once(session, offset, chunk, "upload").await {
+                    Ok(()) => Ok(()),
+                    Err(GeminiError::Transport) => {
+                        if self.query_offset(session).await? >= expected {
+                            Ok(())
+                        } else {
+                            Err(GeminiError::Transport)
+                        }
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn finalize_chunk(
@@ -204,7 +308,7 @@ impl GeminiClient {
         &self,
         remote: &RemoteFile,
         model: &str,
-    ) -> Result<String, GeminiError> {
+    ) -> Result<GenerationResult, GeminiError> {
         let path = format!("/v1beta/models/{model}:generateContent");
         let url = Self::url(&self.api_base, &path)?;
         let request = GenerateRequest {
@@ -223,6 +327,7 @@ impl GeminiClient {
                 ],
             }],
         };
+        let started = Instant::now();
         let response = self
             .retry(|| {
                 self.client
@@ -232,14 +337,29 @@ impl GeminiClient {
                     .send()
             })
             .await?;
-        let response: GenerateResponse = response.json().await.map_err(|_| GeminiError::Decode)?;
-        response
+        let status = response.status().as_u16();
+        let response_bytes = response.bytes().await.map_err(|_| GeminiError::Transport)?;
+        if response_bytes.len() > MAX_RESPONSE_BYTES {
+            return Err(GeminiError::ResponseTooLarge);
+        }
+        let response: GenerateResponse =
+            serde_json::from_slice(&response_bytes).map_err(|_| GeminiError::Decode)?;
+        let analysis_nonempty = response
             .candidates
             .into_iter()
             .flat_map(|candidate| candidate.content.parts)
             .filter_map(|part| part.text)
-            .find(|text| !text.trim().is_empty())
-            .ok_or(GeminiError::EmptyAnalysis)
+            .any(|text| !text.trim().is_empty());
+        if !analysis_nonempty {
+            return Err(GeminiError::EmptyAnalysis);
+        }
+        Ok(GenerationResult {
+            analysis_nonempty,
+            response_bytes: response_bytes.len(),
+            status,
+            model: model.to_owned(),
+            latency: started.elapsed(),
+        })
     }
 
     pub async fn delete_file(&self, name: &str) -> Result<(), GeminiError> {
@@ -315,6 +435,30 @@ impl GeminiClient {
         .await
     }
 
+    async fn upload_once(
+        &self,
+        session: &UploadSession,
+        offset: u64,
+        chunk: &[u8],
+        command: &'static str,
+    ) -> Result<(), GeminiError> {
+        let response = self
+            .client
+            .post(session.url.clone())
+            .header("x-goog-api-key", &self.api_key)
+            .header("x-goog-upload-command", command)
+            .header("x-goog-upload-offset", offset)
+            .body(chunk.to_vec())
+            .send()
+            .await
+            .map_err(|_| GeminiError::Transport)?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(GeminiError::HttpStatus(response.status().as_u16()))
+        }
+    }
+
     async fn get_file(&self, name: &str) -> Result<RemoteFile, GeminiError> {
         let url = Self::url(&self.api_base, &format!("/v1beta/{name}"))?;
         let response = self
@@ -338,22 +482,20 @@ impl GeminiClient {
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<Response, reqwest::Error>>,
     {
-        for attempt in 0..MAX_ATTEMPTS {
-            let response = match request().await {
-                Ok(response) => response,
-                Err(_) if attempt + 1 == MAX_ATTEMPTS => return Err(GeminiError::Transport),
-                Err(_) => {
-                    sleep(fallback_retry_delay(attempt)).await;
-                    continue;
-                }
-            };
+        for attempt in 0..self.retry_policy.max_attempts {
+            let response = request().await.map_err(|_| GeminiError::Transport)?;
             if response.status().is_success() {
                 return Ok(response);
             }
-            if !transient(response.status()) || attempt + 1 == MAX_ATTEMPTS {
+            if !transient(response.status()) || attempt + 1 == self.retry_policy.max_attempts {
                 return Err(GeminiError::HttpStatus(response.status().as_u16()));
             }
-            sleep(retry_delay(response.headers(), attempt)).await;
+            sleep(retry_delay(
+                response.headers(),
+                attempt,
+                self.retry_policy.max_delay,
+            ))
+            .await;
         }
         Err(GeminiError::Transport)
     }
@@ -378,7 +520,7 @@ fn transient(status: StatusCode) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }
 
-fn retry_delay(headers: &HeaderMap, attempt: u8) -> Duration {
+fn retry_delay(headers: &HeaderMap, attempt: u8, maximum: Duration) -> Duration {
     headers
         .get(RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
@@ -387,8 +529,5 @@ fn retry_delay(headers: &HeaderMap, attempt: u8) -> Duration {
             || Duration::from_millis(100 * 2_u64.pow(u32::from(attempt))),
             Duration::from_secs,
         )
-}
-
-fn fallback_retry_delay(attempt: u8) -> Duration {
-    Duration::from_millis(100 * 2_u64.pow(u32::from(attempt)))
+        .min(maximum)
 }

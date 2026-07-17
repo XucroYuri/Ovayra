@@ -1,11 +1,21 @@
 use std::time::Duration;
 
-use spike_gemini::{FileState, GeminiClient};
+use spike_gemini::{FileState, GeminiClient, RetryPolicy};
 use spike_platform::{EnvelopeCipher, MemorySecretStore};
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
 fn client(server: &MockServer) -> GeminiClient {
     GeminiClient::for_endpoints("api-key-that-must-not-leak", &server.uri(), &server.uri()).unwrap()
+}
+
+fn no_wait_client(server: &MockServer) -> GeminiClient {
+    GeminiClient::for_endpoints_with_retry_policy(
+        "api-key-that-must-not-leak",
+        &server.uri(),
+        &server.uri(),
+        RetryPolicy::bounded(3, Duration::ZERO),
+    )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -138,13 +148,15 @@ async fn polls_generates_and_deletes_with_complete_shapes() {
         .await
         .unwrap();
     assert_eq!(remote.state, FileState::Active);
-    assert_eq!(
-        client
-            .generate_content(&remote, "gemini-3.1-flash-lite")
-            .await
-            .unwrap(),
-        "A synthetic video."
-    );
+    let generation = client
+        .generate_content(&remote, "gemini-3.1-flash-lite")
+        .await
+        .unwrap();
+    assert!(generation.analysis_nonempty());
+    assert_eq!(generation.status(), 200);
+    assert_eq!(generation.model(), "gemini-3.1-flash-lite");
+    assert!(generation.response_bytes() > 0);
+    assert!(!format!("{generation:?}").contains("synthetic video"));
     client.delete_file(&remote.name).await.unwrap();
 }
 
@@ -211,6 +223,43 @@ async fn retries_transient_errors_honors_retry_after_and_does_not_retry_client_e
                 .is_err()
         );
     }
+}
+
+#[tokio::test]
+async fn caps_nonzero_retry_after_and_never_blindly_replays_transport_errors() {
+    let server = MockServer::start().await;
+    Mock::given(matchers::path("/upload/v1beta/files"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "3600"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(matchers::path("/upload/v1beta/files"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-goog-upload-url", format!("{}/session/1", server.uri())),
+        )
+        .mount(&server)
+        .await;
+    assert!(
+        no_wait_client(&server)
+            .start_upload("synthetic", "video/webm", 1)
+            .await
+            .is_ok()
+    );
+
+    let transport = GeminiClient::for_endpoints_with_retry_policy(
+        "api-key-that-must-not-leak",
+        "http://127.0.0.1:1",
+        "http://127.0.0.1:1",
+        RetryPolicy::bounded(3, Duration::from_secs(1)),
+    )
+    .unwrap();
+    assert!(
+        transport
+            .start_upload("synthetic", "video/webm", 1)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

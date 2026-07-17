@@ -6,7 +6,7 @@ mod client;
 mod dto;
 mod session;
 
-pub use client::{GeminiClient, GeminiError};
+pub use client::{GeminiClient, GeminiError, GenerationResult, RetryPolicy};
 pub use session::{ResumedUpload, UploadSession};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -172,6 +172,7 @@ fn stage_gemini_upload(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn resume_gemini_upload(
     input: &Path,
     checkpoint_path: &Path,
@@ -190,55 +191,87 @@ fn resume_gemini_upload(
     let resumed = client
         .resume_checkpoint(&cipher, &record)
         .context("unable to decrypt Gemini checkpoint")?;
-    let observed_offset = runtime
-        .block_on(client.query_offset(resumed.session()))
-        .context("unable to query Gemini server offset")?;
-    if observed_offset != resumed.staged_offset() {
-        anyhow::bail!("Gemini server offset differs from the encrypted staged offset")
-    }
-    let remote = runtime
-        .block_on(resume_and_finalize(
+    let resumed_remote = runtime
+        .block_on(resume_from_server(
             &client,
             resumed.session(),
-            observed_offset,
+            resumed.staged_offset(),
             &bytes,
         ))
         .context("unable to resume and finalize Gemini upload")?;
-    let active = runtime
-        .block_on(client.poll_until_ready(
-            &remote.name,
-            Duration::from_secs(2),
-            Duration::from_secs(300),
-        ))
-        .context("Gemini file did not reach ACTIVE")?;
-    let analysis_started = Instant::now();
-    let analysis = runtime
-        .block_on(client.generate_content(&active, model))
-        .context("Gemini analysis request failed")?;
-    let analysis_latency = analysis_started.elapsed();
-    if analysis.trim().is_empty() {
-        anyhow::bail!("Gemini returned an empty analysis")
-    }
-    runtime
-        .block_on(client.delete_file(&active.name))
-        .context("unable to delete Gemini remote file")?;
-    fs::remove_file(checkpoint_path)
-        .context("remote file was deleted but encrypted checkpoint cleanup failed")?;
+    let observed_offset = resumed_remote.observed_offset;
+    let persisted_offset = resumed_remote.persisted_offset;
+    let remote = resumed_remote.remote;
+    let (analysis, remote_cleanup) =
+        runtime.block_on(analyze_then_cleanup(&client, &remote, model));
+    let checkpoint_cleanup = if remote_cleanup.is_ok() {
+        fs::remove_file(checkpoint_path).context("unable to remove encrypted checkpoint")
+    } else {
+        // Retain only the encrypted record when remote cleanup failed: it is the recovery handle.
+        Ok(())
+    };
     let mut evidence = Evidence::new(SpikeId::Gemini, target);
+    evidence.measure("persisted_offset", persisted_offset)?;
     evidence.measure("resumed_offset", observed_offset)?;
-    evidence.measure("remote_state", "ACTIVE")?;
-    evidence.measure("analysis_bytes", analysis.len())?;
-    evidence.measure("model", model)?;
+    evidence.measure("offset_mismatch", observed_offset != persisted_offset)?;
     evidence.measure(
-        "analysis_latency_ms",
-        analysis_latency.as_millis().try_into().unwrap_or(u64::MAX),
+        "remote_state",
+        if analysis.is_ok() {
+            "ACTIVE"
+        } else {
+            "TERMINAL_FAILURE"
+        },
     )?;
-    evidence.measure("remote_delete", "PASS")?;
+    evidence.measure(
+        "analysis_nonempty",
+        analysis
+            .as_ref()
+            .is_ok_and(spike_gemini::GenerationResult::analysis_nonempty),
+    )?;
+    if let Ok(generation) = &analysis {
+        evidence.measure("response_bytes", generation.response_bytes())?;
+        evidence.measure("model", generation.model())?;
+        evidence.measure("http_status", generation.status())?;
+        evidence.measure(
+            "analysis_latency_ms",
+            generation
+                .latency()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX),
+        )?;
+    }
+    evidence.measure(
+        "remote_delete",
+        if remote_cleanup.is_ok() {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+    )?;
+    evidence.measure(
+        "checkpoint_cleanup",
+        if checkpoint_cleanup.is_ok() {
+            "PASS"
+        } else {
+            "FAIL"
+        },
+    )?;
     evidence.finish(
-        Verdict::Pass,
+        if analysis.is_ok() && remote_cleanup.is_ok() && checkpoint_cleanup.is_ok() {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        },
         started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
     );
     write_finished_evidence(evidence_path, &evidence)?;
+    checkpoint_cleanup?;
+    remote_cleanup.context("unable to delete Gemini remote file")?;
+    let generation = analysis.context("Gemini poll or analysis request failed")?;
+    if !generation.analysis_nonempty() {
+        anyhow::bail!("Gemini returned an empty analysis")
+    }
     println!("UPLOAD_RESUMED=true");
     println!("REMOTE_STATE=ACTIVE");
     println!("ANALYSIS_NONEMPTY=true");
@@ -285,6 +318,59 @@ async fn resume_and_finalize(
     client
         .finalize_chunk(session, offset, &bytes[start_index..])
         .await
+}
+
+struct ResumedRemote {
+    persisted_offset: u64,
+    observed_offset: u64,
+    remote: spike_gemini::RemoteFile,
+}
+
+async fn analyze_then_cleanup(
+    client: &GeminiClient,
+    remote: &spike_gemini::RemoteFile,
+    model: &str,
+) -> (
+    Result<spike_gemini::GenerationResult, spike_gemini::GeminiError>,
+    Result<(), spike_gemini::GeminiError>,
+) {
+    let analysis = async {
+        let active = client
+            .poll_until_ready(
+                &remote.name,
+                Duration::from_secs(2),
+                Duration::from_secs(300),
+            )
+            .await?;
+        client.generate_content(&active, model).await
+    }
+    .await;
+    // A remote file exists even if polling or generation fails; cleanup is intentionally unconditional.
+    let cleanup = client.delete_file(&remote.name).await;
+    (analysis, cleanup)
+}
+
+async fn resume_from_server(
+    client: &GeminiClient,
+    session: &UploadSession,
+    persisted_offset: u64,
+    bytes: &[u8],
+) -> Result<ResumedRemote, spike_gemini::GeminiError> {
+    let observed_offset = client.query_offset(session).await?;
+    let total = u64::try_from(bytes.len()).map_err(|_| spike_gemini::GeminiError::Protocol)?;
+    if observed_offset > total
+        || session.chunk_granularity().is_some_and(|granularity| {
+            observed_offset < total && !observed_offset.is_multiple_of(granularity)
+        })
+    {
+        return Err(spike_gemini::GeminiError::Protocol);
+    }
+    let remote = resume_and_finalize(client, session, observed_offset, bytes).await?;
+    Ok(ResumedRemote {
+        persisted_offset,
+        observed_offset,
+        remote,
+    })
 }
 
 fn gemini_api_key() -> Result<String> {
@@ -601,7 +687,82 @@ fn write_evidence_atomic(destination: &Path, json: &str) -> std::io::Result<()> 
 mod tests {
     use std::fs;
 
-    use super::{evidence_target_from_values, write_evidence_atomic};
+    use spike_gemini::{FileState, GeminiClient, RemoteFile};
+    use spike_platform::{EnvelopeCipher, MemorySecretStore};
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+    use super::{
+        analyze_then_cleanup, evidence_target_from_values, resume_from_server,
+        write_evidence_atomic,
+    };
+
+    #[tokio::test]
+    async fn terminal_analysis_failure_still_attempts_remote_cleanup() {
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("GET")).and(matchers::path("/v1beta/files/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"name":"files/1","uri":"gemini://files/1","mimeType":"video/webm","state":"FAILED","error":{"code":13,"message":"failure","status":"INTERNAL"}})))
+            .mount(&server).await;
+        Mock::given(matchers::method("DELETE"))
+            .and(matchers::path("/v1beta/files/1"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        let client = GeminiClient::for_endpoints("test-key", &server.uri(), &server.uri()).unwrap();
+        let remote = RemoteFile {
+            name: "files/1".to_owned(),
+            uri: "gemini://files/1".to_owned(),
+            mime_type: "video/webm".to_owned(),
+            state: FileState::Processing,
+        };
+        let (analysis, cleanup) =
+            analyze_then_cleanup(&client, &remote, "gemini-3.1-flash-lite").await;
+        assert!(analysis.is_err());
+        assert!(cleanup.is_ok());
+    }
+
+    #[tokio::test]
+    async fn resume_orchestration_uses_server_offset_when_checkpoint_hint_differs() {
+        let server = MockServer::start().await;
+        let session_url = format!("{}/session/1", server.uri());
+        Mock::given(matchers::path("/upload/v1beta/files"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-goog-upload-url", session_url)
+                    .insert_header("x-goog-upload-chunk-granularity", "4"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(matchers::header("x-goog-upload-command", "query"))
+            .respond_with(
+                ResponseTemplate::new(200).insert_header("x-goog-upload-size-received", "4"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(matchers::headers("x-goog-upload-command", vec!["upload", "finalize"]))
+            .and(matchers::header("x-goog-upload-offset", "4"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"file":{"name":"files/1","uri":"gemini://files/1","mimeType":"video/webm","state":"PROCESSING"}})))
+            .mount(&server).await;
+        let client = GeminiClient::for_endpoints("test-key", &server.uri(), &server.uri()).unwrap();
+        let session = client
+            .start_upload("synthetic", "video/webm", 8)
+            .await
+            .unwrap();
+        let cipher =
+            EnvelopeCipher::load_or_create(&MemorySecretStore::default(), "resume-test").unwrap();
+        let record = client.checkpoint(&cipher, &session, 0).unwrap();
+        let resumed = client.resume_checkpoint(&cipher, &record).unwrap();
+        let outcome = resume_from_server(
+            &client,
+            resumed.session(),
+            resumed.staged_offset(),
+            b"12345678",
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.persisted_offset, 0);
+        assert_eq!(outcome.observed_offset, 4);
+        assert_eq!(outcome.remote.name, "files/1");
+    }
 
     #[test]
     fn atomically_replaces_evidence_without_leaving_temporary_files() {
