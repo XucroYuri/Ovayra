@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>system-entities</key><array><dict><key>dev-entry</key><string>/dev/disk4s1</string><key>mount-point</key><string>/Volumes/Ovayra Phase 0</string></dict><dict><key>dev-entry</key><string>/dev/disk4s2</string><key>mount-point</key><string>/Volumes/Other</string></dict></array></dict></plist>

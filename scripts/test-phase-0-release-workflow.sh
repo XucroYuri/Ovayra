@@ -16,5 +16,5 @@ for required in \
   rg -F --quiet "$required" "$workflow" || { echo "workflow missing required release hardening: $required" >&2; exit 1; }
 done
 rg -F --quiet 'hdiutil attach -plist -readonly -nobrowse' "$inspector"
-rg -F --quiet 'parse-hdiutil-plist.py --device' "$inspector"
+rg -F --quiet 'attachment="$(scripts/parse-hdiutil-plist.py' "$inspector"
 rg -F --quiet 'hdiutil detach "$device"' "$inspector"

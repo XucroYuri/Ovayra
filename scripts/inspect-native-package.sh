@@ -59,8 +59,9 @@ case "$kind" in
     test -f "$artifact" || usage
     attach_plist="$temporary/attach.plist"
     hdiutil attach -plist -readonly -nobrowse "$artifact" > "$attach_plist"
-    device="$(scripts/parse-hdiutil-plist.py --device "$attach_plist")"
-    mount_point="$(scripts/parse-hdiutil-plist.py "$attach_plist")"
+    attachment="$(scripts/parse-hdiutil-plist.py "$attach_plist")"
+    device="$(printf '%s' "$attachment" | python3 -c 'import json, sys; print(json.load(sys.stdin)["device"])')"
+    mount_point="$(printf '%s' "$attachment" | python3 -c 'import json, sys; print(json.load(sys.stdin)["mount_point"])')"
     app="$(find "$mount_point" -maxdepth 1 -type d -name '*.app' -print)"
     test "$(printf '%s\n' "$app" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 || { echo 'DMG must contain exactly one app' >&2; exit 1; }
     inspect_root "$app" ovayra-spike ffmpeg
