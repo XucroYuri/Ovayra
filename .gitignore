@@ -3,6 +3,6 @@
 .env.*
 !.env.example
 .superpowers/
+.worktrees/
 /target/
 *.log
-
