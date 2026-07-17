@@ -37,3 +37,13 @@ ovayra-spike`; and `git diff --check`.
 Pinned `OVAYRA_FFMPEG` and `OVAYRA_FFPROBE` executables are not available in this worktree, so no
 real-device self-test or forced-fallback command was run. The ignored bundle-dependent CPU test
 remains unrun; deterministic policy, CLI, fake-child, and evidence contracts are green.
+
+## Review-fix GREEN
+
+Hardware quarantine is now process-wide per backend, with an isolated constructor reserved for
+deterministic policy-category tests. A new policy after quarantine starts directly on CPU with the
+stable `hardware_quarantined` code, and `actual_backend` remains empty until an attempt succeeds.
+Inventory now uses an exact no-common-argument path with a strict 64 KiB stdout cap and draining.
+Hardware execution preflights the complete inventory and maps collection/component failure to
+`probe_failed`. Forced fallback adds a backend device sentinel and an unknown FFmpeg option so a
+driver that ignores device selection still fails closed before CPU is permitted.

@@ -188,6 +188,12 @@ fn run_hardware_attempt(
     else {
         return AttemptOutcome::SpawnFailed;
     };
+    let Ok(inventory) = runtime.block_on(FfmpegRunner::new(ffmpeg).collect_inventory()) else {
+        return AttemptOutcome::ProbeFailed;
+    };
+    if !plan.is_available(&inventory, true, 1) {
+        return AttemptOutcome::ProbeFailed;
+    }
     let command = runtime.block_on(FfmpegRunner::new(ffmpeg).run_os_with_timeout(
         plan.transcode_args(input, output, render_device),
         Duration::from_secs(30),

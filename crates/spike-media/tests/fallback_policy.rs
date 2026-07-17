@@ -3,7 +3,7 @@ use std::path::Path;
 
 #[test]
 fn hardware_failure_restarts_the_stage_on_cpu_and_records_reason() {
-    let mut policy = ExecutionPolicy::prefer(Backend::NvencNvdec);
+    let mut policy = ExecutionPolicy::prefer_isolated(Backend::NvencNvdec);
     let next = policy
         .observe(AttemptOutcome::Failed("device lost".into()))
         .unwrap();
@@ -25,7 +25,7 @@ fn every_hardware_failure_category_is_a_bounded_cpu_downgrade() {
             DowngradeCode::InvalidFfprobe,
         ),
     ] {
-        let mut policy = ExecutionPolicy::prefer(Backend::Vaapi);
+        let mut policy = ExecutionPolicy::prefer_isolated(Backend::Vaapi);
         assert!(policy.observe(outcome).unwrap().is_cpu());
         assert_eq!(policy.downgrade_code(), Some(code));
         assert!(!policy.may_retry_hardware_in_this_session());
@@ -34,7 +34,7 @@ fn every_hardware_failure_category_is_a_bounded_cpu_downgrade() {
 
 #[test]
 fn cpu_failure_is_terminal_and_never_schedules_a_third_attempt() {
-    let mut policy = ExecutionPolicy::prefer(Backend::VideoToolbox);
+    let mut policy = ExecutionPolicy::prefer_isolated(Backend::VideoToolbox);
     assert!(policy.observe(AttemptOutcome::TimedOut).unwrap().is_cpu());
     assert!(policy.observe(AttemptOutcome::NonZeroExit).is_err());
     assert!(policy.observe(AttemptOutcome::NonZeroExit).is_err());
@@ -43,7 +43,7 @@ fn cpu_failure_is_terminal_and_never_schedules_a_third_attempt() {
 
 #[test]
 fn evidence_values_are_stable_backend_names_not_diagnostics() {
-    let mut policy = ExecutionPolicy::prefer(Backend::D3d11vaMf);
+    let mut policy = ExecutionPolicy::prefer_isolated(Backend::D3d11vaMf);
     assert!(
         policy
             .observe(AttemptOutcome::Failed(
@@ -53,7 +53,7 @@ fn evidence_values_are_stable_backend_names_not_diagnostics() {
             .is_cpu()
     );
     assert_eq!(policy.requested_backend(), Backend::D3d11vaMf);
-    assert_eq!(policy.actual_backend(), Some(Backend::Cpu));
+    assert_eq!(policy.actual_backend(), None);
     assert_eq!(policy.downgrade_code(), Some(DowngradeCode::Failed));
     assert_eq!(
         policy.downgrade_reason(),
@@ -61,6 +61,20 @@ fn evidence_values_are_stable_backend_names_not_diagnostics() {
     );
     assert_eq!(Backend::D3d11vaMf.as_str(), "d3d11va-mf");
     assert_eq!(Backend::Cpu.as_str(), "cpu");
+}
+
+#[test]
+fn production_policy_quarantines_a_backend_across_new_policies() {
+    let mut first = ExecutionPolicy::prefer(Backend::NvencNvdec);
+    assert!(first.observe(AttemptOutcome::ProbeFailed).unwrap().is_cpu());
+    let later = ExecutionPolicy::prefer(Backend::NvencNvdec);
+    assert_eq!(
+        later.downgrade_code(),
+        Some(DowngradeCode::HardwareQuarantined)
+    );
+    assert_eq!(later.actual_backend(), None);
+    assert!(!later.may_retry_hardware_in_this_session());
+    assert!(later.next_backend().unwrap().is_cpu());
 }
 
 #[test]

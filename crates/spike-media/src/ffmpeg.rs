@@ -18,6 +18,7 @@ pub const COMMON_ARGS: &[&str] = &[
     "pipe:1",
 ];
 const STDERR_LIMIT: usize = 1024 * 1024;
+const INVENTORY_STDOUT_LIMIT: usize = 64 * 1024;
 
 /// Minimal evidence retained from a child invocation. It intentionally holds no command or path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +37,8 @@ pub enum FfmpegError {
     MissingOutputPipe,
     #[error("FFmpeg child exceeded its bounded execution time")]
     TimedOut,
+    #[error("FFmpeg stdout exceeded its bounded limit")]
+    StdoutLimit,
 }
 
 /// Errors while gathering the complete `FFmpeg` capability inventory.
@@ -145,8 +148,7 @@ impl FfmpegRunner {
         let mut outputs = Vec::with_capacity(InventoryCommand::ALL.len());
         for command in InventoryCommand::ALL {
             let args = command.args();
-            let (stdout, evidence) = self
-                .run(&args)
+            let (stdout, evidence) = Box::pin(self.run_inventory(&args))
                 .await
                 .map_err(InventoryCollectionError::Runner)?;
             if evidence.exit_code != Some(0) {
@@ -159,6 +161,54 @@ impl FfmpegRunner {
         }
         Inventory::from_command_outputs(&outputs).map_err(InventoryCollectionError::Inventory)
     }
+
+    async fn run_inventory(&self, args: &[&str]) -> Result<(Vec<u8>, FfmpegEvidence), FfmpegError> {
+        let mut child = Command::new(&self.executable)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(FfmpegError::Spawn)?;
+        let stdout = child.stdout.take().ok_or(FfmpegError::MissingOutputPipe)?;
+        let stderr = child.stderr.take().ok_or(FfmpegError::MissingOutputPipe)?;
+        let joined = Box::pin(tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::try_join!(
+                read_capped(stdout, INVENTORY_STDOUT_LIMIT),
+                async {
+                    read_stderr_capped(stderr)
+                        .await
+                        .map_err(FfmpegError::Output)
+                },
+                async { child.wait().await.map_err(FfmpegError::Output) }
+            )
+        }))
+        .await;
+        let (stdout, stderr, status) = match joined {
+            Ok(Ok(value)) => value,
+            Ok(Err(error)) => {
+                terminate_and_reap(&mut child).await;
+                return Err(error);
+            }
+            Err(_) => {
+                terminate_and_reap(&mut child).await;
+                return Err(FfmpegError::TimedOut);
+            }
+        };
+        let digest = Sha256::digest(redact_stderr(&stderr));
+        let mut stderr_sha256 = String::with_capacity(64);
+        for byte in digest {
+            write!(&mut stderr_sha256, "{byte:02x}").expect("writing into a String cannot fail");
+        }
+        Ok((
+            stdout,
+            FfmpegEvidence {
+                exit_code: status.code(),
+                stderr_sha256,
+            },
+        ))
+    }
 }
 
 async fn terminate_and_reap(child: &mut tokio::process::Child) {
@@ -170,6 +220,34 @@ async fn read_all(mut reader: impl AsyncRead + Unpin) -> std::io::Result<Vec<u8>
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes).await?;
     Ok(bytes)
+}
+
+async fn read_capped(
+    mut reader: impl AsyncRead + Unpin,
+    limit: usize,
+) -> Result<Vec<u8>, FfmpegError> {
+    let mut bytes = Vec::with_capacity(limit);
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .await
+            .map_err(FfmpegError::Output)?;
+        if read == 0 {
+            return Ok(bytes);
+        }
+        let remaining = limit.saturating_sub(bytes.len());
+        bytes.extend_from_slice(&buffer[..read.min(remaining)]);
+        if read > remaining {
+            while reader
+                .read(&mut buffer)
+                .await
+                .map_err(FfmpegError::Output)?
+                != 0
+            {}
+            return Err(FfmpegError::StdoutLimit);
+        }
+    }
 }
 
 async fn read_stderr_capped(mut reader: impl AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
@@ -308,7 +386,7 @@ mod tests {
         assert_eq!(stdout, b"stdout:--emit-large\n");
         assert_eq!(evidence.exit_code, Some(0));
         assert_eq!(evidence.stderr_sha256.len(), 64);
-        runner.collect_inventory().await.unwrap();
+        Box::pin(runner.collect_inventory()).await.unwrap();
 
         let log_contents = fs::read_to_string(log).unwrap();
         let lines: Vec<_> = log_contents.lines().collect();
@@ -343,6 +421,6 @@ mod tests {
         let (_script_directory, executable) =
             script(&log_directory.path().join("arguments.log"), true);
         let runner = super::FfmpegRunner::new(executable);
-        assert!(runner.collect_inventory().await.is_err());
+        assert!(Box::pin(runner.collect_inventory()).await.is_err());
     }
 }

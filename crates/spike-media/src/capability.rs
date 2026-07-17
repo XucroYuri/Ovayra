@@ -1,4 +1,11 @@
-use std::{ffi::OsString, path::Path, str::FromStr};
+use std::{
+    ffi::OsString,
+    path::Path,
+    str::FromStr,
+    sync::atomic::{AtomicU8, Ordering},
+};
+
+static QUARANTINED_HARDWARE: AtomicU8 = AtomicU8::new(0);
 
 /// Stable names for the hardware paths evaluated in the feasibility spike.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +68,7 @@ pub enum DowngradeCode {
     MissingFrames,
     InvalidFfprobe,
     Failed,
+    HardwareQuarantined,
 }
 
 impl DowngradeCode {
@@ -74,6 +82,7 @@ impl DowngradeCode {
             Self::MissingFrames => "missing_frames",
             Self::InvalidFfprobe => "invalid_ffprobe",
             Self::Failed => "failed",
+            Self::HardwareQuarantined => "hardware_quarantined",
         }
     }
 }
@@ -117,6 +126,7 @@ pub struct ExecutionPolicy {
     downgrade_reason: Option<String>,
     attempts_started: u8,
     hardware_quarantined: bool,
+    process_wide_quarantine: bool,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -133,15 +143,28 @@ impl ExecutionPolicy {
     /// Panics when passed `Backend::Cpu`, which is only an actual fallback result.
     #[must_use]
     pub fn prefer(backend: Backend) -> Self {
+        Self::new(backend, true)
+    }
+
+    /// Isolated constructor for deterministic policy tests; production must use `prefer`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn prefer_isolated(backend: Backend) -> Self {
+        Self::new(backend, false)
+    }
+
+    fn new(backend: Backend, use_global_quarantine: bool) -> Self {
         assert!(!backend.is_cpu(), "a preferred backend must be hardware");
+        let quarantined = use_global_quarantine && is_quarantined(backend);
         Self {
             requested_backend: backend,
-            scheduled_backend: Some(backend),
+            scheduled_backend: Some(if quarantined { Backend::Cpu } else { backend }),
             actual_backend: None,
-            downgrade_code: None,
+            downgrade_code: quarantined.then_some(DowngradeCode::HardwareQuarantined),
             downgrade_reason: None,
-            attempts_started: 1,
-            hardware_quarantined: false,
+            attempts_started: u8::from(!quarantined),
+            hardware_quarantined: quarantined,
+            process_wide_quarantine: use_global_quarantine,
         }
     }
 
@@ -164,13 +187,15 @@ impl ExecutionPolicy {
             return Err(ExecutionPolicyError::Terminal);
         }
         self.hardware_quarantined = true;
+        if self.process_wide_quarantine {
+            quarantine(current);
+        }
         self.downgrade_code = outcome.downgrade_code();
         self.downgrade_reason = match outcome {
             AttemptOutcome::Failed(reason) => Some(bound_reason(&reason)),
             _ => None,
         };
         self.scheduled_backend = Some(Backend::Cpu);
-        self.actual_backend = Some(Backend::Cpu);
         self.attempts_started = 2;
         Ok(Backend::Cpu)
     }
@@ -205,6 +230,27 @@ impl ExecutionPolicy {
     pub const fn attempts_started(&self) -> u8 {
         self.attempts_started
     }
+
+    #[must_use]
+    pub const fn next_backend(&self) -> Option<Backend> {
+        self.scheduled_backend
+    }
+}
+
+const fn backend_bit(backend: Backend) -> u8 {
+    match backend {
+        Backend::VideoToolbox => 1,
+        Backend::D3d11vaMf => 2,
+        Backend::NvencNvdec => 4,
+        Backend::Vaapi => 8,
+        Backend::Cpu => 0,
+    }
+}
+fn is_quarantined(backend: Backend) -> bool {
+    QUARANTINED_HARDWARE.load(Ordering::Acquire) & backend_bit(backend) != 0
+}
+fn quarantine(backend: Backend) {
+    QUARANTINED_HARDWARE.fetch_or(backend_bit(backend), Ordering::AcqRel);
 }
 
 fn bound_reason(reason: &str) -> String {
@@ -536,6 +582,12 @@ impl HardwarePlan {
         }
         args.push(OsString::from("-t"));
         args.push(OsString::from("10"));
+        if render_device.is_some_and(|device| {
+            device == Path::new("__ovayra_definitely_invalid_hardware_device__")
+        }) {
+            // A deliberately unknown option fails closed even if a driver ignores device selection.
+            args.push(OsString::from("-ovayra_forced_hardware_failure"));
+        }
         args.push(output.as_os_str().to_owned());
         args
     }
