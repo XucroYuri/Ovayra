@@ -146,6 +146,91 @@ impl CpuFallback {
         .collect()
     }
 
+    /// The CPU fallback used after a forced hardware failure. Its source is the caller-provided
+    /// Phase 0 synthetic input, never arbitrary user media.
+    #[must_use]
+    pub fn ffmpeg_input_arguments(
+        &self,
+        input: &Path,
+        output: &Path,
+        seconds: u64,
+    ) -> Vec<OsString> {
+        ["-y", "-hide_banner", "-nostdin", "-i"]
+            .into_iter()
+            .map(OsString::from)
+            .chain(std::iter::once(input.as_os_str().to_owned()))
+            .chain(std::iter::once(OsString::from("-t")))
+            .chain(std::iter::once(seconds.to_string().into()))
+            .chain(
+                [
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "0:a:0",
+                    "-c:v",
+                    "libvpx-vp9",
+                    "-deadline",
+                    "realtime",
+                    "-cpu-used",
+                    "4",
+                    "-b:v",
+                    "600k",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "libopus",
+                    "-b:a",
+                    "64k",
+                    "-ac",
+                    "1",
+                    "-f",
+                    "webm",
+                    "-progress",
+                    "pipe:1",
+                    "-nostats",
+                ]
+                .into_iter()
+                .map(OsString::from),
+            )
+            .chain(std::iter::once(output.as_os_str().to_owned()))
+            .collect()
+    }
+
+    /// Transcodes a generated Phase 0 input to the validated LGPL CPU `WebM` fallback.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed redacted child-process error for invalid duration or failed execution.
+    pub fn transcode_synthetic_input(
+        &self,
+        input: &Path,
+        output: &Path,
+        seconds: u64,
+    ) -> Result<CpuFallbackOutput, CpuFallbackError> {
+        if seconds == 0 {
+            return Err(CpuFallbackError::InvalidRequestedDuration);
+        }
+        let timeout = Duration::from_secs(seconds)
+            .saturating_add(Duration::from_secs(15))
+            .min(Duration::from_secs(600))
+            .min(self.timeouts.generation);
+        let process = collect_generation(
+            &self.ffmpeg,
+            self.ffmpeg_input_arguments(input, output, seconds),
+            timeout,
+        )?;
+        if !process.status.success() {
+            return Err(CpuFallbackError::Failed);
+        }
+        if !process.progress.saw_finished {
+            return Err(CpuFallbackError::ProgressIncomplete);
+        }
+        Ok(CpuFallbackOutput {
+            average_speed: process.progress.average_speed(),
+            ffmpeg_build_id: self.ffmpeg_build_id()?,
+        })
+    }
+
     /// Generates VP9/Opus `WebM` using only lavfi sources and drains both pipes via `output`.
     ///
     /// # Errors
@@ -280,6 +365,71 @@ impl FfprobeError {
 }
 
 impl FfprobeReport {
+    /// Validates an arbitrary hardware self-test output with the bounded ffprobe query.
+    /// Unlike `read`, this checks only that the output is parseable media with video and duration.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redacted ffprobe error for failed child execution or invalid metadata.
+    pub fn validate_any(ffprobe: impl AsRef<Path>, output: &Path) -> Result<(), FfprobeError> {
+        let bytes = fs::metadata(output).map_err(|_| FfprobeError::Spawn)?.len();
+        let process = collect_child(
+            ffprobe.as_ref(),
+            [
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration:stream=codec_type",
+                "-of",
+                "json",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .chain(std::iter::once(output.as_os_str().to_owned())),
+            Duration::from_secs(5),
+            64 * 1024,
+            16 * 1024,
+        )
+        .map_err(|error| FfprobeError::from_collection(&error))?;
+        if !process.status.success() {
+            return Err(FfprobeError::Failed);
+        }
+        let json = std::str::from_utf8(&process.stdout).map_err(|_| FfprobeError::MalformedJson)?;
+        Self::validate_any_json(json, bytes)
+    }
+
+    /// Validates the non-sensitive facts needed for a hardware transcode self-test.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero-byte output, malformed JSON, missing video, and non-positive duration.
+    pub fn validate_any_json(input: &str, output_bytes: u64) -> Result<(), FfprobeError> {
+        if output_bytes == 0 {
+            return Err(FfprobeError::ZeroBytes);
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(input).map_err(|_| FfprobeError::MalformedJson)?;
+        let duration = value
+            .pointer("/format/duration")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|duration| duration.parse::<f64>().ok())
+            .filter(|duration| duration.is_finite() && *duration > 0.0)
+            .ok_or(FfprobeError::InvalidDuration)?;
+        let _ = duration;
+        let video = value
+            .get("streams")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|streams| {
+                streams.iter().any(|stream| {
+                    stream.get("codec_type").and_then(serde_json::Value::as_str) == Some("video")
+                })
+            });
+        if !video {
+            return Err(FfprobeError::MissingStream);
+        }
+        Ok(())
+    }
+
     /// Runs the exact bounded ffprobe query and validates its result without retaining logs.
     ///
     /// # Errors

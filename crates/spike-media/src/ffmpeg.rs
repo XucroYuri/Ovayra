@@ -1,4 +1,4 @@
-use std::{fmt::Write as _, path::PathBuf, process::Stdio};
+use std::{ffi::OsString, fmt::Write as _, path::PathBuf, process::Stdio, time::Duration};
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -34,6 +34,8 @@ pub enum FfmpegError {
     Output(#[source] std::io::Error),
     #[error("FFmpeg child did not provide its configured output pipe")]
     MissingOutputPipe,
+    #[error("FFmpeg child exceeded its bounded execution time")]
+    TimedOut,
 }
 
 /// Errors while gathering the complete `FFmpeg` capability inventory.
@@ -72,6 +74,23 @@ impl FfmpegRunner {
     ///
     /// Returns an error if the child process cannot be spawned or its output cannot be collected.
     pub async fn run(&self, args: &[&str]) -> Result<(Vec<u8>, FfmpegEvidence), FfmpegError> {
+        self.run_os_with_timeout(
+            args.iter().map(OsString::from).collect(),
+            Duration::from_secs(30),
+        )
+        .await
+    }
+
+    /// Executes a path-safe argument list with a bounded timeout and child cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed redacted child-process error, including timeout after kill-and-reap.
+    pub async fn run_os_with_timeout(
+        &self,
+        args: Vec<OsString>,
+        timeout: Duration,
+    ) -> Result<(Vec<u8>, FfmpegEvidence), FfmpegError> {
         let mut child = Command::new(&self.executable)
             .args(COMMON_ARGS)
             .args(args)
@@ -89,14 +108,21 @@ impl FfmpegRunner {
             terminate_and_reap(&mut child).await;
             return Err(FfmpegError::MissingOutputPipe);
         };
-        let (stdout, stderr, status) =
-            match tokio::try_join!(read_all(stdout), read_stderr_capped(stderr), child.wait(),) {
-                Ok(output) => output,
-                Err(error) => {
-                    terminate_and_reap(&mut child).await;
-                    return Err(FfmpegError::Output(error));
-                }
-            };
+        let joined = Box::pin(tokio::time::timeout(timeout, async {
+            tokio::try_join!(read_all(stdout), read_stderr_capped(stderr), child.wait(),)
+        }))
+        .await;
+        let (stdout, stderr, status) = match joined {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                terminate_and_reap(&mut child).await;
+                return Err(FfmpegError::Output(error));
+            }
+            Err(_) => {
+                terminate_and_reap(&mut child).await;
+                return Err(FfmpegError::TimedOut);
+            }
+        };
         let redacted = redact_stderr(&stderr);
         let digest = Sha256::digest(redacted);
         let mut stderr_sha256 = String::with_capacity(64);
