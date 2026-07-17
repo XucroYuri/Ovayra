@@ -187,6 +187,26 @@ printf 'speed=1.0x\nprogress=end\n'
     }
 
     #[test]
+    fn controlled_child_streams_arbitrarily_long_valid_progress_without_retaining_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = r#"
+if [ "$1" = "-version" ]; then echo "ffmpeg version streaming-test"; exit 0; fi
+last=''; for argument in "$@"; do last="$argument"; done
+printf synthetic > "$last"
+i=0; while [ "$i" -lt 6000 ]; do
+  printf 'speed=2.0x\nprogress=continue\n'
+  i=$((i + 1))
+done
+printf 'speed=2.0x\nprogress=end\n'
+"#;
+        let fake = fake_executable(dir.path(), "long-progress", script);
+        let generated = CpuFallback::new(&fake, &fake)
+            .generate_synthetic(&dir.path().join("fallback.webm"), 3)
+            .unwrap();
+        assert_eq!(generated.average_speed, Some(2.0));
+    }
+
+    #[test]
     fn controlled_child_failure_and_timeout_are_redacted_and_reaped() {
         let dir = tempfile::tempdir().unwrap();
         let failure = fake_executable(

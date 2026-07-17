@@ -52,6 +52,8 @@ pub enum CpuFallbackError {
     EmptyBuildId,
     #[error("FFmpeg build identity command failed")]
     BuildIdFailed,
+    #[error("FFmpeg progress did not finish")]
+    ProgressIncomplete,
     #[error(transparent)]
     Progress(#[from] ProgressError),
 }
@@ -162,19 +164,19 @@ impl CpuFallback {
             .saturating_add(headroom)
             .min(Duration::from_secs(600))
             .min(self.timeouts.generation);
-        let process = collect_child(
+        let process = collect_generation(
             &self.ffmpeg,
             self.ffmpeg_arguments(output, seconds),
             generation_timeout,
-            64 * 1024,
-            16 * 1024,
-        )
-        .map_err(|error| CpuFallbackError::from_collection(&error))?;
+        )?;
         if !process.status.success() {
             return Err(CpuFallbackError::Failed);
         }
+        if !process.progress.saw_finished {
+            return Err(CpuFallbackError::ProgressIncomplete);
+        }
         Ok(CpuFallbackOutput {
-            average_speed: Self::average_speed_from_progress(&process.stdout)?,
+            average_speed: process.progress.average_speed(),
             ffmpeg_build_id: self.ffmpeg_build_id()?,
         })
     }
@@ -390,6 +392,145 @@ struct ChildOutput {
     stdout: Vec<u8>,
 }
 
+struct GenerationOutput {
+    status: std::process::ExitStatus,
+    progress: ProgressSummary,
+}
+
+#[derive(Default)]
+struct ProgressSummary {
+    speed_sum: f64,
+    speed_count: u64,
+    saw_finished: bool,
+}
+
+impl ProgressSummary {
+    fn record(&mut self, event: &crate::ProgressEvent) {
+        if let Some(speed) = event.speed {
+            self.speed_sum += speed;
+            self.speed_count = self.speed_count.saturating_add(1);
+        }
+        self.saw_finished |= event.finished;
+    }
+
+    fn average_speed(&self) -> Option<f64> {
+        let count = u32::try_from(self.speed_count).expect("progress count fits u32");
+        (count != 0).then(|| self.speed_sum / f64::from(count))
+    }
+}
+
+enum GenerationDrainError {
+    Io,
+    Progress(ProgressError),
+}
+
+fn collect_generation<I>(
+    program: &Path,
+    arguments: I,
+    timeout: Duration,
+) -> Result<GenerationOutput, CpuFallbackError>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| CpuFallbackError::Collect)?;
+    runtime.block_on(collect_generation_async(
+        program.to_owned(),
+        arguments.into_iter().collect(),
+        timeout,
+    ))
+}
+
+async fn collect_generation_async(
+    program: PathBuf,
+    arguments: Vec<OsString>,
+    timeout: Duration,
+) -> Result<GenerationOutput, CpuFallbackError> {
+    let mut child = tokio::process::Command::new(program)
+        .args(arguments)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| CpuFallbackError::Spawn)?;
+    let Some(stdout) = child.stdout.take() else {
+        cleanup_child(&mut child).await;
+        return Err(CpuFallbackError::Collect);
+    };
+    let Some(stderr) = child.stderr.take() else {
+        cleanup_child(&mut child).await;
+        return Err(CpuFallbackError::Collect);
+    };
+    let joined = Box::pin(tokio::time::timeout(timeout, async {
+        tokio::try_join!(
+            async { child.wait().await.map_err(|_| GenerationDrainError::Io) },
+            drain_progress(stdout),
+            drain_discard(stderr),
+        )
+    }))
+    .await;
+    match joined {
+        Ok(Ok((status, progress, ()))) => Ok(GenerationOutput { status, progress }),
+        Ok(Err(GenerationDrainError::Progress(error))) => {
+            cleanup_child(&mut child).await;
+            Err(CpuFallbackError::Progress(error))
+        }
+        Ok(Err(GenerationDrainError::Io)) => {
+            cleanup_child(&mut child).await;
+            Err(CpuFallbackError::Collect)
+        }
+        Err(_) => {
+            cleanup_child(&mut child).await;
+            Err(CpuFallbackError::TimedOut)
+        }
+    }
+}
+
+async fn drain_progress<R>(mut reader: R) -> Result<ProgressSummary, GenerationDrainError>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut parser = ProgressParser::default();
+    let mut summary = ProgressSummary::default();
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .await
+            .map_err(|_| GenerationDrainError::Io)?;
+        if read == 0 {
+            return Ok(summary);
+        }
+        for event in parser
+            .push(&buffer[..read])
+            .map_err(GenerationDrainError::Progress)?
+        {
+            summary.record(&event);
+        }
+    }
+}
+
+async fn drain_discard<R>(mut reader: R) -> Result<(), GenerationDrainError>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut buffer = [0_u8; 8 * 1024];
+    while reader
+        .read(&mut buffer)
+        .await
+        .map_err(|_| GenerationDrainError::Io)?
+        != 0
+    {}
+    Ok(())
+}
+
+async fn cleanup_child(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+}
+
 fn collect_child<I>(
     program: &Path,
     arguments: I,
@@ -427,31 +568,41 @@ async fn collect_child_async(
         .kill_on_drop(true)
         .spawn()
         .map_err(ChildCollectionError::Spawn)?;
-    let stdout = child.stdout.take().ok_or_else(missing_pipe)?;
-    let stderr = child.stderr.take().ok_or_else(missing_pipe)?;
-    let stdout_task = tokio::spawn(drain_pipe(stdout, stdout_limit, true));
-    let stderr_task = tokio::spawn(drain_pipe(stderr, stderr_limit, false));
-    let status = match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(error)) => return Err(ChildCollectionError::Read(error)),
+    let Some(stdout) = child.stdout.take() else {
+        cleanup_child(&mut child).await;
+        return Err(missing_pipe());
+    };
+    let Some(stderr) = child.stderr.take() else {
+        cleanup_child(&mut child).await;
+        return Err(missing_pipe());
+    };
+    let joined = Box::pin(tokio::time::timeout(timeout, async {
+        tokio::try_join!(
+            async { child.wait().await.map_err(ChildCollectionError::Read) },
+            async {
+                drain_pipe(stdout, stdout_limit, true)
+                    .await
+                    .map_err(ChildCollectionError::Read)
+            },
+            async {
+                drain_pipe(stderr, stderr_limit, false)
+                    .await
+                    .map_err(ChildCollectionError::Read)
+            },
+        )
+    }))
+    .await;
+    let (status, stdout, _stderr) = match joined {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            cleanup_child(&mut child).await;
+            return Err(error);
+        }
         Err(_) => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            stdout_task.abort();
-            stderr_task.abort();
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
+            cleanup_child(&mut child).await;
             return Err(ChildCollectionError::TimedOut);
         }
     };
-    let stdout = stdout_task
-        .await
-        .map_err(|error| join_error(&error))?
-        .map_err(ChildCollectionError::Read)?;
-    let _stderr = stderr_task
-        .await
-        .map_err(|error| join_error(&error))?
-        .map_err(ChildCollectionError::Read)?;
     if stdout.truncated {
         return Err(ChildCollectionError::StdoutLimit);
     }
@@ -463,10 +614,6 @@ async fn collect_child_async(
 
 fn missing_pipe() -> ChildCollectionError {
     ChildCollectionError::Read(std::io::Error::other("child pipe was unavailable"))
-}
-
-fn join_error(error: &tokio::task::JoinError) -> ChildCollectionError {
-    ChildCollectionError::Read(std::io::Error::other(error.to_string()))
 }
 
 struct DrainedPipe {

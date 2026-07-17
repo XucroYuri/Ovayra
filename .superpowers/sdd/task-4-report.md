@@ -15,7 +15,7 @@ This is the intended RED failure: neither required type existed.
 
 ## GREEN
 
-Implemented an FFmpeg/ffprobe-child-only CPU fallback. Its generated input is exclusively `lavfi`; the output plan explicitly maps video and audio and encodes VP9 (`libvpx-vp9`) plus Opus (`libopus`) in yuv420p WebM. `Command::output` drains both child streams before results are interpreted. Process errors carry no child paths or raw stderr.
+Implemented an FFmpeg/ffprobe-child-only CPU fallback. Its generated input is exclusively `lavfi`; the output plan explicitly maps video and audio and encodes VP9 (`libvpx-vp9`) plus Opus (`libopus`) in yuv420p WebM. A bounded Tokio collector drains both child streams before results are interpreted. Process errors carry no child paths or raw stderr.
 
 The non-ignored contracts cover the canonical 10-second argument vector, caller-supplied duration, nonzero child rejection, malformed and incompatible ffprobe JSON, zero-byte and zero-duration rejection, progress-derived average speed, SHA-256 content hashing/redaction, explicit CLI flags, and the 10-second CLI default.
 
@@ -40,3 +40,11 @@ RED contracts were added for zero-duration rejection, Clap rejection of `--secon
 GREEN replaces all CPU fallback, build-ID, and ffprobe `Command::output` paths with one Tokio child collector. It uses piped stdout/stderr, concurrent bounded draining (discarding excess), `kill_on_drop`, and a timeout that kills then waits/reaps the child before returning a redacted typed error. Generation timeout is `seconds + 15s`, capped at ten minutes; utility commands use five seconds. Zero seconds is rejected before child spawn both by the API and by Clap.
 
 The evidence writer now creates a temporary file in the destination directory, writes, flushes, syncs, and atomically persists it. Its contract confirms replacement leaves no temporary artifacts. The controlled Unix child tests validate exact generated arguments, build-ID and ffprobe execution, 128 KiB stderr flood draining, nonzero redaction, timeout termination/reap, and no unpinned FFmpeg execution.
+
+## Second review-fix GREEN
+
+Generation now has a specialized streaming progress drain: it feeds fixed chunks into `ProgressParser` and retains only speed sum/count plus the finished marker. A controlled child emits over 64 KiB of valid complete progress blocks and succeeds with the correct average, so normal long encodes are not limited by the utility stdout cap.
+
+Both collectors use `try_join!` under a timeout; missing pipes, read/wait errors, parser errors, and timeouts invoke the same kill-plus-wait/reap cleanup before their redacted typed error is returned. Once a child has successfully waited, post-wait validation requires no kill.
+
+After persist, Unix syncs the parent directory. Windows syncs the persisted destination; `tempfile` uses its platform MoveFileEx replacement behavior there. These steps improve durability while retaining the existing no-truncated-destination and temporary-file cleanup contract; they do not claim a stronger cross-platform fsync guarantee.

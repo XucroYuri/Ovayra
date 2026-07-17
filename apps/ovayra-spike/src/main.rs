@@ -73,8 +73,12 @@ fn write_evidence_atomic(destination: &Path, json: &str) -> std::io::Result<()> 
     temporary.as_file().sync_all()?;
     temporary
         .persist(destination)
-        .map(|_| ())
-        .map_err(|error| error.error)
+        .map_err(|error| error.error)?;
+    #[cfg(unix)]
+    fs::File::open(parent)?.sync_all()?;
+    #[cfg(windows)]
+    fs::File::open(destination)?.sync_all()?;
+    Ok(())
 }
 
 #[cfg(test)]
