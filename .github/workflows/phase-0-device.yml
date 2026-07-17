@@ -1,8 +1,9 @@
 name: phase-0-device
 
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows: ["phase-0-ffmpeg"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       producer_run_id:
@@ -15,7 +16,32 @@ permissions:
   actions: read
 
 jobs:
+  prepare-producer:
+    runs-on: ubuntu-24.04
+    outputs:
+      run_id: ${{ steps.producer.outputs.run_id }}
+      head_sha: ${{ steps.producer.outputs.head_sha }}
+    steps:
+      - id: producer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_RUN_ID: ${{ inputs.producer_run_id }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = workflow_run ]; then run_id="${{ github.event.workflow_run.id }}"; else run_id="$REQUESTED_RUN_ID"; fi
+          test -n "$run_id"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > producer.json
+          jq -e --arg repository "$GITHUB_REPOSITORY" '.name == "phase-0-ffmpeg" and .path == ".github/workflows/phase-0-ffmpeg.yml" and .event == "push" and .conclusion == "success" and .head_repository.full_name == $repository and .head_branch == "main"' producer.json >/dev/null
+          sha="$(jq -r .head_sha producer.json)"; test -n "$sha" && test "$sha" != null
+          if [ "${{ github.event_name }}" = workflow_run ]; then test "$sha" = "${{ github.event.workflow_run.head_sha }}"; fi
+          printf 'run_id=%s\nhead_sha=%s\n' "$run_id" "$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.producer.outputs.head_sha }}
   core:
+    needs: prepare-producer
+    if: needs.prepare-producer.result == 'success'
     name: ${{ matrix.target_id }} real-device core
     runs-on: ${{ fromJSON(matrix.labels) }}
     timeout-minutes: 45
@@ -35,6 +61,8 @@ jobs:
       RUST_BACKTRACE: "1"
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-producer.outputs.head_sha }}
       - name: Assert a real Linux desktop user session, never headless SSH
         if: runner.os == 'Linux'
         shell: bash
@@ -54,14 +82,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BUNDLE_ARTIFACT: ${{ matrix.bundle }}
-          REQUESTED_RUN_ID: ${{ inputs.producer_run_id }}
+          PREPARED_RUN_ID: ${{ needs.prepare-producer.outputs.run_id }}
         run: |
           set -euo pipefail
-          checked_sha="$(git rev-parse HEAD)"
-          if [ "${{ github.event_name }}" = workflow_dispatch ]; then run_id="$REQUESTED_RUN_ID"; else run_id="$(gh run list --workflow phase-0-ffmpeg.yml --commit "$checked_sha" --status success --json databaseId,headSha,event,conclusion --jq '.[] | select(.headSha == env.GITHUB_SHA and .event == "push" and .conclusion == "success") | .databaseId' | head -n 1)"; fi
+          checked_sha="$(git rev-parse HEAD)"; run_id="$PREPARED_RUN_ID"
           test -n "$run_id" || { echo 'a same-SHA Task 10 producer is required' >&2; exit 1; }
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > target-producer.json
-          jq -e --arg repository "$GITHUB_REPOSITORY" --arg sha "$checked_sha" '.name == "phase-0-ffmpeg" and .event == "push" and .conclusion == "success" and .head_repository.full_name == $repository and .head_sha == $sha' target-producer.json >/dev/null
+          jq -e --arg repository "$GITHUB_REPOSITORY" --arg sha "$checked_sha" '.name == "phase-0-ffmpeg" and .path == ".github/workflows/phase-0-ffmpeg.yml" and .event == "push" and .conclusion == "success" and .head_repository.full_name == $repository and .head_branch == "main" and .head_sha == $sha' target-producer.json >/dev/null
           rm -f target-producer.json
           mkdir -p target/phase-0/bundle
           gh run download "$run_id" --name "$BUNDLE_ARTIFACT" --dir target/phase-0/bundle
@@ -74,13 +101,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BUNDLE_ARTIFACT: ${{ matrix.bundle }}
-          REQUESTED_RUN_ID: ${{ inputs.producer_run_id }}
+          PREPARED_RUN_ID: ${{ needs.prepare-producer.outputs.run_id }}
         run: |
-          $ErrorActionPreference = 'Stop'; $checkedSha = git rev-parse HEAD
-          if ('${{ github.event_name }}' -eq 'workflow_dispatch') { $runId = $env:REQUESTED_RUN_ID } else { $runs = gh run list --workflow phase-0-ffmpeg.yml --commit $checkedSha --status success --json databaseId,headSha,event,conclusion | ConvertFrom-Json; $runId = ($runs | Where-Object { $_.headSha -eq $checkedSha -and $_.event -eq 'push' -and $_.conclusion -eq 'success' } | Select-Object -First 1).databaseId }
+          $ErrorActionPreference = 'Stop'; $checkedSha = git rev-parse HEAD; $runId = $env:PREPARED_RUN_ID
           if ([string]::IsNullOrWhiteSpace($runId)) { throw 'a same-SHA Task 10 producer is required' }
           $producer = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$runId" | ConvertFrom-Json
-          if ($producer.name -ne 'phase-0-ffmpeg' -or $producer.event -ne 'push' -or $producer.conclusion -ne 'success' -or $producer.head_repository.full_name -ne $env:GITHUB_REPOSITORY -or $producer.head_sha -ne $checkedSha) { throw 'Task 10 producer binding failed' }
+          if ($producer.name -ne 'phase-0-ffmpeg' -or $producer.path -ne '.github/workflows/phase-0-ffmpeg.yml' -or $producer.event -ne 'push' -or $producer.conclusion -ne 'success' -or $producer.head_repository.full_name -ne $env:GITHUB_REPOSITORY -or $producer.head_branch -ne 'main' -or $producer.head_sha -ne $checkedSha) { throw 'Task 10 producer binding failed' }
           New-Item -ItemType Directory -Force target/phase-0/bundle | Out-Null; gh run download $runId --name $env:BUNDLE_ARTIFACT --dir target/phase-0/bundle
           $ffmpeg = Get-ChildItem target/phase-0/bundle -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1; $ffprobe = Get-ChildItem target/phase-0/bundle -Filter ffprobe.exe -File -Recurse | Select-Object -First 1
           if ($null -eq $ffmpeg -or $null -eq $ffprobe) { throw 'Task 10 bundle is incomplete' }
@@ -111,7 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo run --locked -p ovayra-spike -- preview --ffmpeg "$OVAYRA_FFMPEG" --input target/phase-0/fallback.webm --duration-seconds 120 --automation --evidence "docs/phase-0/evidence/preview-$OVAYRA_TARGET_ID.json"
-          cargo run --locked -p ovayra-spike -- evidence verify-preview --file "docs/phase-0/evidence/preview-$OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- evidence verify-preview --expected-target "$OVAYRA_TARGET_ID" --file "docs/phase-0/evidence/preview-$OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- platform tray --automation --evidence "docs/phase-0/evidence/tray-$OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- platform tray --automation --force-no-tray --evidence "docs/phase-0/evidence/tray-fallback-$OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- platform keyring --evidence "docs/phase-0/evidence/keyring-$OVAYRA_TARGET_ID.json"
@@ -122,7 +148,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           cargo run --locked -p ovayra-spike -- preview --ffmpeg $env:OVAYRA_FFMPEG --input target/phase-0/fallback.webm --duration-seconds 120 --automation --evidence "docs/phase-0/evidence/preview-$env:OVAYRA_TARGET_ID.json"
-          cargo run --locked -p ovayra-spike -- evidence verify-preview --file "docs/phase-0/evidence/preview-$env:OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- evidence verify-preview --expected-target $env:OVAYRA_TARGET_ID --file "docs/phase-0/evidence/preview-$env:OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- platform tray --automation --evidence "docs/phase-0/evidence/tray-$env:OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- platform tray --automation --force-no-tray --evidence "docs/phase-0/evidence/tray-fallback-$env:OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- platform keyring --evidence "docs/phase-0/evidence/keyring-$env:OVAYRA_TARGET_ID.json"
@@ -148,7 +174,7 @@ jobs:
 
   gemini:
     name: ${{ matrix.target_id }} protected Gemini smoke
-    needs: core
+    needs: [prepare-producer, core]
     environment: gemini-smoke
     runs-on: ${{ fromJSON(matrix.labels) }}
     timeout-minutes: 30
@@ -165,6 +191,8 @@ jobs:
       RUST_BACKTRACE: "1"
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare-producer.outputs.head_sha }}
       - uses: actions/download-artifact@v6
         with:
           name: phase-0-device-${{ matrix.target_id }}

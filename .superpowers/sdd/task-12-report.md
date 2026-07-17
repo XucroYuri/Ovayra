@@ -6,4 +6,6 @@ Implemented the protected `main`/manual self-hosted workflow for the six `Target
 
 Gemini is an independent `gemini-smoke` environment job for one macOS, Windows, and Linux desktop representative. It consumes the prior fallback artifact, masks the protected environment credential, uses separate stage/resume processes, and removes the encrypted checkpoint before lint/upload. No signing credential is requested by this workflow.
 
-Local verification was run for the new lint/verifier integration tests, formatting, and the application clippy target. Full workspace verification remains the final repository-level check; protected self-hosted and Gemini runs cannot be executed locally.
+Follow-up review hardening adds a trusted hosted producer gate before any self-hosted matrix allocation, exact producer workflow/path/repository/main/SHA binding, typed expected-target preview verification, Unicode-normalized key checks, armored private-key detection, opaque entry identifiers, and bounded traversal/identity checks.
+
+Local verification ran `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets`, and the initialized evidence lint command. YAML parsing and workflow/static binding checks also passed. Protected self-hosted and Gemini executions cannot be performed locally.

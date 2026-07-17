@@ -1,16 +1,23 @@
 use std::{
     collections::BTreeSet,
-    fmt, fs,
+    fmt::{self, Write as _},
+    fs,
+    io::Read as _,
     path::{Path, PathBuf},
 };
 
 use anyhow::Result;
 use serde::de::{self, Error as _, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
-use spike_contracts::{Evidence, SpikeId, Verdict};
+use sha2::{Digest, Sha256};
+use spike_contracts::{Evidence, SpikeId, TargetId, Verdict};
+use unicode_normalization::UnicodeNormalization;
 
 const MAX_FILE_BYTES: u64 = 1_048_576;
 const MAX_FILES: usize = 1_024;
+const MAX_DIRECTORIES: usize = 128;
+const MAX_DEPTH: usize = 32;
+const MAX_TOTAL_BYTES: u64 = 8 * MAX_FILE_BYTES;
 const FORBIDDEN_KEY_PARTS: &[&str] = &[
     "apikey",
     "token",
@@ -43,6 +50,10 @@ enum Category {
     UploadUrl,
     UrlCredential,
     HomePath,
+    UnsafeName,
+    MaxDepth,
+    TooManyDirectories,
+    ChangedEntry,
     Io,
 }
 
@@ -67,20 +78,24 @@ impl Category {
             Self::UploadUrl => "upload-url",
             Self::UrlCredential => "url-credential",
             Self::HomePath => "home-path",
+            Self::UnsafeName => "unsafe-name",
+            Self::MaxDepth => "max-depth",
+            Self::TooManyDirectories => "too-many-directories",
+            Self::ChangedEntry => "changed-entry",
             Self::Io => "io",
         }
     }
 }
 
 struct LintError {
-    relative: PathBuf,
+    entry: String,
     category: Category,
 }
 
 impl LintError {
-    fn new(relative: impl Into<PathBuf>, category: Category) -> Self {
+    fn new(relative: impl AsRef<Path>, category: Category) -> Self {
         Self {
-            relative: relative.into(),
+            entry: entry_id(relative.as_ref()),
             category,
         }
     }
@@ -90,8 +105,8 @@ impl fmt::Display for LintError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "evidence lint rejected {}: {}",
-            self.relative.display(),
+            "evidence lint rejected entry={}: {}",
+            self.entry,
             self.category.as_str()
         )
     }
@@ -122,13 +137,28 @@ pub(crate) fn lint_dir(directory: &Path, text_mode: bool) -> Result<()> {
         return Err(LintError::new(".", Category::NotDirectory).into());
     }
 
+    let canonical_root =
+        fs::canonicalize(directory).map_err(|_| LintError::new(".", Category::Io))?;
     let mut files = Vec::new();
-    collect_regular_files(directory, directory, &mut files)?;
+    let mut directories = 1;
+    collect_regular_files(
+        directory,
+        &canonical_root,
+        directory,
+        0,
+        &mut directories,
+        &mut files,
+    )?;
     if files.len() > MAX_FILES {
         return Err(LintError::new(".", Category::TooManyFiles).into());
     }
+    let mut total_bytes = 0_u64;
     for file in files {
-        lint_file(directory, &file, text_mode)?;
+        total_bytes =
+            total_bytes.saturating_add(lint_file(directory, &canonical_root, &file, text_mode)?);
+        if total_bytes > MAX_TOTAL_BYTES {
+            return Err(LintError::new(".", Category::Oversized).into());
+        }
     }
     println!("EVIDENCE_LINT=PASS");
     Ok(())
@@ -136,31 +166,44 @@ pub(crate) fn lint_dir(directory: &Path, text_mode: bool) -> Result<()> {
 
 /// Validates the documented desktop preview threshold from parsed `Evidence`,
 /// never from a human-oriented console line.
-pub(crate) fn verify_preview(file: &Path) -> Result<()> {
+pub(crate) fn verify_preview(file: &Path, expected_target: &str) -> Result<()> {
     let contents = fs::read_to_string(file).map_err(|_| LintError::new(".", Category::Io))?;
     let evidence = Evidence::from_json(&contents)
         .map_err(|_| LintError::new(".", Category::InvalidEvidence))?;
-    if evidence.spike() != SpikeId::Preview || evidence.verdict() != Some(Verdict::Pass) {
+    let expected_target = TargetId::new(expected_target)
+        .map_err(|_| anyhow::anyhow!("expected target must be a supported Phase 0 target"))?;
+    if evidence.spike() != SpikeId::Preview
+        || evidence.verdict() != Some(Verdict::Pass)
+        || evidence.target() != &expected_target
+    {
         anyhow::bail!("preview evidence did not report pass");
     }
     let measurements = evidence.measurements();
     let observed_milli_fps = measurement_u64(measurements, "observed_milli_fps")?;
     let requested_duration_seconds = measurement_u64(measurements, "requested_duration_seconds")?;
     let measured_elapsed_ms = measurement_u64(measurements, "measured_elapsed_ms")?;
+    let frames_read = measurement_u64(measurements, "frames_read")?;
+    let frames_applied = measurement_u64(measurements, "frames_applied")?;
     let p95_ms = measurement_u64(measurements, "p95_ms")?;
     let rss_growth_mib = measurement_u64(measurements, "rss_growth_mib")?;
     let hidden = measurement_bool(measurements, "automation_hide")?;
     let restored = measurement_bool(measurements, "automation_restore")?;
     let samples_complete = measurement_bool(measurements, "rss_samples_complete")?;
+    let event_loop_errors = measurement_u64(measurements, "event_loop_errors")?;
+    let preview_stream_errors = measurement_u64(measurements, "preview_stream_errors")?;
     if !(23_000..=25_000).contains(&observed_milli_fps)
         || requested_duration_seconds != 120
         || measured_elapsed_ms < 120_000
         || evidence.duration_ms().unwrap_or(0) < 120_000
+        || frames_read == 0
+        || frames_applied == 0
         || !hidden
         || !restored
         || p95_ms > 100
         || rss_growth_mib > 64
         || !samples_complete
+        || event_loop_errors != 0
+        || preview_stream_errors != 0
     {
         anyhow::bail!("preview evidence did not meet the documented threshold");
     }
@@ -192,7 +235,22 @@ fn measurement_bool(
         })
 }
 
-fn collect_regular_files(root: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+fn collect_regular_files(
+    root: &Path,
+    canonical_root: &Path,
+    current: &Path,
+    depth: usize,
+    directories: &mut usize,
+    files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    if depth > MAX_DEPTH {
+        return Err(LintError::new(relative(root, current), Category::MaxDepth).into());
+    }
+    let current_canonical = fs::canonicalize(current)
+        .map_err(|_| LintError::new(relative(root, current), Category::Io))?;
+    if !current_canonical.starts_with(canonical_root) {
+        return Err(LintError::new(relative(root, current), Category::ChangedEntry).into());
+    }
     let entries =
         fs::read_dir(current).map_err(|_| LintError::new(relative(root, current), Category::Io))?;
     for entry in entries {
@@ -204,7 +262,11 @@ fn collect_regular_files(root: &Path, current: &Path, files: &mut Vec<PathBuf>) 
             return Err(LintError::new(relative(root, &path), Category::Symlink).into());
         }
         if metadata.is_dir() {
-            collect_regular_files(root, &path, files)?;
+            *directories += 1;
+            if *directories > MAX_DIRECTORIES {
+                return Err(LintError::new(".", Category::TooManyDirectories).into());
+            }
+            collect_regular_files(root, canonical_root, &path, depth + 1, directories, files)?;
         } else if metadata.is_file() {
             files.push(path);
             if files.len() > MAX_FILES {
@@ -217,19 +279,42 @@ fn collect_regular_files(root: &Path, current: &Path, files: &mut Vec<PathBuf>) 
     Ok(())
 }
 
-fn lint_file(root: &Path, file: &Path, text_mode: bool) -> Result<()> {
+fn lint_file(root: &Path, canonical_root: &Path, file: &Path, text_mode: bool) -> Result<u64> {
     let relative = relative(root, file);
     if !text_mode && relative == Path::new(".gitkeep") {
-        return Ok(());
+        return Ok(0);
     }
-    let metadata = fs::metadata(file).map_err(|_| LintError::new(&relative, Category::Io))?;
+    if unsafe_name(&relative) {
+        return Err(LintError::new(&relative, Category::UnsafeName).into());
+    }
+    let before = fs::symlink_metadata(file).map_err(|_| LintError::new(&relative, Category::Io))?;
+    if before.file_type().is_symlink() || !before.is_file() {
+        return Err(LintError::new(&relative, Category::ChangedEntry).into());
+    }
+    let mut opened = fs::File::open(file).map_err(|_| LintError::new(&relative, Category::Io))?;
+    let metadata = opened
+        .metadata()
+        .map_err(|_| LintError::new(&relative, Category::Io))?;
+    let after = fs::symlink_metadata(file).map_err(|_| LintError::new(&relative, Category::Io))?;
+    let canonical_file =
+        fs::canonicalize(file).map_err(|_| LintError::new(&relative, Category::Io))?;
+    if after.file_type().is_symlink()
+        || !same_identity(&before, &metadata)
+        || !same_identity(&metadata, &after)
+        || !canonical_file.starts_with(canonical_root)
+    {
+        return Err(LintError::new(&relative, Category::ChangedEntry).into());
+    }
     if metadata.len() > MAX_FILE_BYTES {
         return Err(LintError::new(relative, Category::Oversized).into());
     }
     if !text_mode && file.extension().and_then(|extension| extension.to_str()) != Some("json") {
         return Err(LintError::new(relative, Category::UnsupportedFile).into());
     }
-    let bytes = fs::read(file).map_err(|_| LintError::new(&relative, Category::Io))?;
+    let mut bytes = Vec::with_capacity(metadata.len().try_into().unwrap_or(0));
+    opened
+        .read_to_end(&mut bytes)
+        .map_err(|_| LintError::new(&relative, Category::Io))?;
     if bytes.contains(&0) {
         return Err(LintError::new(relative, Category::BinaryOrInvalidText).into());
     }
@@ -237,12 +322,51 @@ fn lint_file(root: &Path, file: &Path, text_mode: bool) -> Result<()> {
         .map_err(|_| LintError::new(&relative, Category::BinaryOrInvalidText))?;
     if text_mode {
         scan_text(contents).map_err(|category| LintError::new(relative, category))?;
-        return Ok(());
+        return Ok(metadata.len());
     }
     parse_and_scan_json(contents).map_err(|category| LintError::new(&relative, category))?;
     Evidence::from_json(contents)
         .map_err(|_| LintError::new(relative, Category::InvalidEvidence))?;
-    Ok(())
+    Ok(metadata.len())
+}
+
+fn entry_id(relative: &Path) -> String {
+    if relative == Path::new(".") {
+        return "root".to_owned();
+    }
+    let digest = Sha256::digest(relative.as_os_str().as_encoded_bytes());
+    let mut output = String::with_capacity(12);
+    for byte in digest.iter().take(6) {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+fn unsafe_name(relative: &Path) -> bool {
+    relative.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        !name.is_ascii() || scan_text(&name).is_err() || forbidden_key(&name)
+    })
+}
+
+#[cfg(unix)]
+fn same_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(windows)]
+fn same_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    left.file_attributes() == right.file_attributes()
+        && left.creation_time() == right.creation_time()
+        && left.file_size() == right.file_size()
+        && left.last_write_time() == right.last_write_time()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    left.len() == right.len() && left.file_type() == right.file_type()
 }
 
 fn relative(root: &Path, path: &Path) -> PathBuf {
@@ -380,10 +504,13 @@ impl<'de> Visitor<'de> for SafeJsonVisitor {
 }
 
 fn forbidden_key(key: &str) -> bool {
-    let normalized: String = key
+    let normalized: String = key.nfkc().flat_map(char::to_lowercase).collect();
+    if !normalized.is_ascii() {
+        return true;
+    }
+    let normalized: String = normalized
         .chars()
         .filter(char::is_ascii_alphanumeric)
-        .flat_map(char::to_lowercase)
         .collect();
     FORBIDDEN_KEY_PARTS
         .iter()
@@ -405,13 +532,30 @@ fn scan_text(value: &str) -> std::result::Result<(), Category> {
     if lower.contains("x-goog-upload") {
         return Err(Category::UploadHeader);
     }
-    if lower.contains("-----begin") && lower.contains("private key-----") {
+    if contains_armored_private_key(&lower) {
         return Err(Category::PrivateKey);
     }
     if lower.contains("/users/") || lower.contains("/home/") || lower.contains(":\\users\\") {
         return Err(Category::HomePath);
     }
     scan_urls(value)
+}
+
+fn contains_armored_private_key(value: &str) -> bool {
+    let mut remaining = value;
+    while let Some(start) = remaining.find("-----begin ") {
+        let header = &remaining[start..];
+        let marker = "-----begin ";
+        let Some(end) = header[marker.len()..].find("-----") else {
+            return false;
+        };
+        let end = marker.len() + end;
+        if header[..end].contains("private key") {
+            return true;
+        }
+        remaining = &header[marker.len()..];
+    }
+    false
 }
 
 fn scan_urls(value: &str) -> std::result::Result<(), Category> {

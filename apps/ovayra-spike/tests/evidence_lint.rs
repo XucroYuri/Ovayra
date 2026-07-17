@@ -47,10 +47,13 @@ impl Drop for Fixture {
     }
 }
 
-fn assert_rejected(output: &std::process::Output, relative: &str, category: &str, secret: &str) {
+fn assert_rejected(output: &std::process::Output, category: &str, secret: &str) {
     assert!(!output.status.success(), "lint unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains(relative), "missing relative path: {stderr}");
+    assert!(
+        stderr.contains("entry="),
+        "missing redacted entry id: {stderr}"
+    );
     assert!(stderr.contains(category), "missing category: {stderr}");
     assert!(
         !stderr.contains(secret),
@@ -76,12 +79,7 @@ fn lint_rejects_sensitive_key_names_at_any_depth_case_insensitively() {
         "nested/keys.json",
         r#"{"safe":{"API_Key":"AIzaSensitive"}}"#,
     );
-    assert_rejected(
-        &fixture.run(false),
-        "nested/keys.json",
-        "forbidden-key",
-        "AIzaSensitive",
-    );
+    assert_rejected(&fixture.run(false), "forbidden-key", "AIzaSensitive");
 }
 
 #[test]
@@ -99,7 +97,7 @@ fn lint_rejects_every_sensitive_known_field_spelling() {
     ] {
         let fixture = Fixture::new();
         fixture.write("fields.json", &format!(r#"{{"safe":{{"{key}":1}}}}"#));
-        assert_rejected(&fixture.run(false), "fields.json", "forbidden-key", key);
+        assert_rejected(&fixture.run(false), "forbidden-key", key);
     }
 }
 
@@ -112,8 +110,11 @@ fn lint_accepts_an_empty_initialized_evidence_directory() {
 #[test]
 fn lint_rejects_duplicate_json_keys() {
     let fixture = Fixture::new();
-    fixture.write("duplicate.json", r#"{"one":1,"one":2}"#);
-    assert_rejected(&fixture.run(false), "duplicate.json", "duplicate-key", "2");
+    fixture.write(
+        "duplicate.json",
+        r#"{"one":"rawduplicatecontent","one":"rawduplicatecontent"}"#,
+    );
+    assert_rejected(&fixture.run(false), "duplicate-key", "rawduplicatecontent");
 }
 
 #[test]
@@ -174,7 +175,7 @@ fn lint_rejects_credential_and_transport_values_without_echoing_them() {
     for (file, contents, category) in cases {
         let fixture = Fixture::new();
         fixture.write(file, contents);
-        assert_rejected(&fixture.run(false), file, category, "hidden");
+        assert_rejected(&fixture.run(false), category, "hidden");
     }
 }
 
@@ -182,16 +183,11 @@ fn lint_rejects_credential_and_transport_values_without_echoing_them() {
 fn lint_text_mode_scans_logs_and_rejects_binary_content() {
     let fixture = Fixture::new();
     fixture.write("package.log", "notary path /home/alice/private");
-    assert_rejected(&fixture.run(true), "package.log", "home-path", "alice");
+    assert_rejected(&fixture.run(true), "home-path", "alice");
 
     let binary = fixture.root.join("binary.log");
     fs::write(&binary, [0_u8, 1, 2]).expect("binary log");
-    assert_rejected(
-        &fixture.run(true),
-        "binary.log",
-        "binary-or-invalid-text",
-        "\0",
-    );
+    assert_rejected(&fixture.run(true), "binary-or-invalid-text", "\0");
 }
 
 #[test]
@@ -202,7 +198,7 @@ fn lint_fails_closed_for_missing_directories_and_non_regular_paths() {
         .arg(missing)
         .output()
         .expect("run missing directory lint");
-    assert_rejected(&output, ".", "missing-directory", "definitely-missing");
+    assert_rejected(&output, "missing-directory", "definitely-missing");
 
     #[cfg(unix)]
     {
@@ -210,7 +206,7 @@ fn lint_fails_closed_for_missing_directories_and_non_regular_paths() {
         let fixture = Fixture::new();
         fixture.write("valid.json", "{}");
         symlink(Path::new("valid.json"), fixture.root.join("link.json")).expect("symlink");
-        assert_rejected(&fixture.run(false), "link.json", "symlink", "valid");
+        assert_rejected(&fixture.run(false), "symlink", "valid");
     }
 }
 
@@ -219,10 +215,16 @@ fn preview_verifier_requires_typed_measurements_instead_of_console_output() {
     let fixture = Fixture::new();
     fixture.write(
         "preview.json",
-        r#"{"schema_version":1,"spike":"preview","target":"macos-arm64-vt","verdict":"pass","duration_ms":120000,"measurements":{"observed_milli_fps":24000,"requested_duration_seconds":120,"measured_elapsed_ms":120000,"automation_hide":true,"automation_restore":true,"p95_ms":100,"rss_growth_mib":64,"rss_samples_complete":true},"observations":[]}"#,
+        r#"{"schema_version":1,"spike":"preview","target":"macos-arm64-vt","verdict":"pass","duration_ms":120000,"measurements":{"observed_milli_fps":24000,"requested_duration_seconds":120,"measured_elapsed_ms":120000,"frames_read":2880,"frames_applied":2880,"automation_hide":true,"automation_restore":true,"p95_ms":100,"rss_growth_mib":64,"rss_samples_complete":true,"event_loop_errors":0,"preview_stream_errors":0},"observations":[]}"#,
     );
     let output = Command::new(env!("CARGO_BIN_EXE_ovayra-spike"))
-        .args(["evidence", "verify-preview", "--file"])
+        .args([
+            "evidence",
+            "verify-preview",
+            "--expected-target",
+            "macos-arm64-vt",
+            "--file",
+        ])
         .arg(fixture.root.join("preview.json"))
         .output()
         .expect("run preview verifier");
@@ -231,4 +233,93 @@ fn preview_verifier_requires_typed_measurements_instead_of_console_output() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn preview_verifier_rejects_wrong_target_zero_frames_and_nonzero_errors() {
+    let fixture = Fixture::new();
+    let cases = [
+        ("wrong-target.json", "windows-x64-mf", 1, 1, 0, 0),
+        ("zero-frames.json", "macos-arm64-vt", 0, 1, 0, 0),
+        ("loop-error.json", "macos-arm64-vt", 1, 1, 1, 0),
+        ("stream-error.json", "macos-arm64-vt", 1, 1, 0, 1),
+    ];
+    for (file, target, read, applied, loop_errors, stream_errors) in cases {
+        fixture.write(file, &format!(r#"{{"schema_version":1,"spike":"preview","target":"{target}","verdict":"pass","duration_ms":120000,"measurements":{{"observed_milli_fps":24000,"requested_duration_seconds":120,"measured_elapsed_ms":120000,"frames_read":{read},"frames_applied":{applied},"automation_hide":true,"automation_restore":true,"p95_ms":100,"rss_growth_mib":64,"rss_samples_complete":true,"event_loop_errors":{loop_errors},"preview_stream_errors":{stream_errors}}},"observations":[]}}"#));
+        let output = Command::new(env!("CARGO_BIN_EXE_ovayra-spike"))
+            .args([
+                "evidence",
+                "verify-preview",
+                "--expected-target",
+                "macos-arm64-vt",
+                "--file",
+            ])
+            .arg(fixture.root.join(file))
+            .output()
+            .expect("run preview verifier");
+        assert!(!output.status.success(), "{file} unexpectedly accepted");
+    }
+}
+
+#[test]
+fn lint_rejects_unicode_confusable_keys_private_key_variants_and_secret_filenames() {
+    let cases = [
+        (
+            "fullwidth.json",
+            r#"{"ａｐｉ＿ｋｅｙ":"x"}"#,
+            false,
+            "forbidden-key",
+            "fullwidth",
+        ),
+        (
+            "escaped.json",
+            r#"{"\uff41\uff50\uff49\uff3f\uff4b\uff45\uff59":"x"}"#,
+            false,
+            "forbidden-key",
+            "escaped",
+        ),
+        (
+            "armored.json",
+            r#"{"note":"-----BEGIN PGP PRIVATE KEY BLOCK-----"}"#,
+            false,
+            "private-key",
+            "armored",
+        ),
+        (
+            "private.log",
+            "-----BEGIN OPENSSH PRIVATE KEY-----",
+            true,
+            "private-key",
+            "OPENSSH",
+        ),
+        (
+            "AIzaSecret-name.json",
+            "{}",
+            false,
+            "unsafe-name",
+            "AIzaSecret-name",
+        ),
+    ];
+    for (file, contents, text, category, secret) in cases {
+        let fixture = Fixture::new();
+        fixture.write(file, contents);
+        assert_rejected(&fixture.run(text), category, secret);
+    }
+}
+
+#[test]
+fn lint_bounds_recursive_depth_and_directory_count() {
+    let fixture = Fixture::new();
+    let mut nested = String::new();
+    for _ in 0..40 {
+        nested.push_str("deep/");
+    }
+    fixture.write(&format!("{nested}evidence.log"), "safe");
+    assert_rejected(&fixture.run(true), "max-depth", "deep");
+
+    let fixture = Fixture::new();
+    for index in 0..130 {
+        fs::create_dir(fixture.root.join(format!("dir-{index}"))).expect("directory");
+    }
+    assert_rejected(&fixture.run(true), "too-many-directories", "dir-");
 }

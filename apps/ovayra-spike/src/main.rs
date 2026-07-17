@@ -123,8 +123,12 @@ fn main() -> Result<()> {
             command: EvidenceCommand::Lint { dir, text },
         } => evidence_lint::lint_dir(&dir, text)?,
         Command::Evidence {
-            command: EvidenceCommand::VerifyPreview { file },
-        } => evidence_lint::verify_preview(&file)?,
+            command:
+                EvidenceCommand::VerifyPreview {
+                    file,
+                    expected_target,
+                },
+        } => evidence_lint::verify_preview(&file, &expected_target)?,
         Command::Gemini {
             command:
                 GeminiCommand::StageUpload {

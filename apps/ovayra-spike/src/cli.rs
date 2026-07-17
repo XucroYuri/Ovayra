@@ -131,6 +131,9 @@ pub(crate) enum EvidenceCommand {
     VerifyPreview {
         #[arg(long)]
         file: PathBuf,
+        /// The device target expected by this workflow; evidence from another device is rejected.
+        #[arg(long, env = "OVAYRA_TARGET_ID")]
+        expected_target: String,
     },
 }
 
