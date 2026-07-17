@@ -13,6 +13,19 @@ pub(crate) struct Cli {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     Version,
+    /// Render a bounded `FFmpeg` preview through Slint's main-thread event loop.
+    Preview {
+        #[arg(long)]
+        ffmpeg: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..))]
+        duration_seconds: u64,
+        #[arg(long)]
+        automation: bool,
+        #[arg(long)]
+        evidence: PathBuf,
+    },
     Media {
         #[command(subcommand)]
         command: MediaCommand,
@@ -90,6 +103,36 @@ mod tests {
     use clap::Parser;
 
     use super::{Cli, Command, MediaCommand};
+
+    #[test]
+    fn preview_uses_the_measurement_contract_defaults() {
+        let cli = Cli::try_parse_from([
+            "ovayra-spike",
+            "preview",
+            "--ffmpeg",
+            "bundle/ffmpeg",
+            "--input",
+            "fallback.webm",
+            "--evidence",
+            "preview.json",
+        ])
+        .unwrap();
+        let Command::Preview {
+            ffmpeg,
+            input,
+            duration_seconds,
+            automation,
+            evidence,
+        } = cli.command
+        else {
+            panic!("expected preview");
+        };
+        assert_eq!(ffmpeg, PathBuf::from("bundle/ffmpeg"));
+        assert_eq!(input, PathBuf::from("fallback.webm"));
+        assert_eq!(duration_seconds, 120);
+        assert!(!automation);
+        assert_eq!(evidence, PathBuf::from("preview.json"));
+    }
 
     #[test]
     fn parses_only_the_cpu_fallback_contract_flags() {

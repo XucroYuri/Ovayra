@@ -1,4 +1,5 @@
 mod cli;
+mod preview_app;
 
 use std::{
     env, fs,
@@ -21,6 +22,20 @@ use crate::cli::{Cli, Command, MediaCommand};
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Version => println!("ovayra-spike {}", env!("CARGO_PKG_VERSION")),
+        Command::Preview {
+            ffmpeg,
+            input,
+            duration_seconds,
+            automation,
+            evidence,
+        } => preview_app::run_preview(
+            ffmpeg,
+            input,
+            duration_seconds,
+            automation,
+            &evidence,
+            evidence_target()?,
+        )?,
         Command::Media {
             command:
                 MediaCommand::CpuFallback {

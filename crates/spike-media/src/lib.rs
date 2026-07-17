@@ -5,6 +5,7 @@
 mod capability;
 mod cpu_fallback;
 mod ffmpeg;
+mod preview;
 mod progress;
 
 pub use capability::{
@@ -18,5 +19,9 @@ pub use cpu_fallback::{
 };
 pub use ffmpeg::{
     COMMON_ARGS, FfmpegError, FfmpegEvidence, FfmpegRunner, InventoryCollectionError,
+};
+pub use preview::{
+    FfmpegPreview, Frame, FrameError, LatestFrame, PREVIEW_FRAME_BYTES, PREVIEW_HEIGHT,
+    PREVIEW_WIDTH, PreviewError, PreviewRun,
 };
 pub use progress::{ProgressError, ProgressEvent, ProgressParser};
