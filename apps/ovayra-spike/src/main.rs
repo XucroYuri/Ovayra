@@ -19,8 +19,8 @@ use clap::Parser;
 use semver::Version;
 use sha2::Digest;
 use spike_contracts::{
-    Evidence, MediaCpuProof, MediaForcedFallbackProof, MediaHardwareProof, PhaseZeroProof, SpikeId,
-    TargetId, Verdict,
+    Evidence, MediaCpuProof, MediaForcedFallbackProof, MediaHardwareProof, PhaseZeroProof,
+    PlatformKeyringProof, SpikeId, TargetId, Verdict,
 };
 use spike_contracts::{
     PlatformProcessProof, ProofComponent, ProofPayload, ProofRow, phase_zero_session,
@@ -162,7 +162,7 @@ fn main() -> Result<()> {
         } => resume_gemini_upload(&input, &checkpoint, &model, &evidence)?,
         Command::Platform {
             command: PlatformCommand::Keyring { evidence },
-        } => keyring_smoke(&OsSecretStore, &evidence, evidence_target()?)?,
+        } => keyring_smoke(&OsSecretStore, &evidence, &evidence_target()?)?,
         Command::Platform {
             command: PlatformCommand::Process { evidence },
         } => process_smoke(&evidence, &evidence_target()?)?,
@@ -177,7 +177,7 @@ fn main() -> Result<()> {
             automation,
             force_no_tray,
             &evidence,
-            evidence_target()?,
+            &evidence_target()?,
         )?,
         Command::Release {
             command: ReleaseCommand::VerifyFfmpeg { bundle, evidence },
@@ -467,7 +467,7 @@ fn process_smoke(evidence_path: &Path, target: &TargetId) -> Result<()> {
 
 /// Exercises the production `SecretStore` boundary without putting a credential identifier or
 /// bytes in evidence. The cleanup guard provides best-effort deletion during unwinding.
-fn keyring_smoke(store: &impl SecretStore, evidence_path: &Path, target: TargetId) -> Result<()> {
+fn keyring_smoke(store: &impl SecretStore, evidence_path: &Path, target: &TargetId) -> Result<()> {
     let started = Instant::now();
     let secret = Zeroizing::new(<[u8; 32]>::generate());
     let account_id = u128::from_le_bytes(
@@ -477,7 +477,7 @@ fn keyring_smoke(store: &impl SecretStore, evidence_path: &Path, target: TargetI
     );
     let account = format!("{KEYRING_SMOKE_ACCOUNT_PREFIX}-{account_id:032x}");
     let mut cleanup = KeyringCleanup::new(store, account);
-    let mut evidence = Evidence::new(SpikeId::Platform, target);
+    let mut evidence = Evidence::new(SpikeId::Platform, target.clone());
     let mut operation_error = None;
 
     let set_started = Instant::now();
@@ -531,7 +531,24 @@ fn keyring_smoke(store: &impl SecretStore, evidence_path: &Path, target: TargetI
         },
         duration_ms(started),
     );
-    write_finished_evidence(evidence_path, &evidence)?;
+    let passed = operation_error.is_none() && cleanup_error.is_none();
+    let proof = PhaseZeroProof {
+        schema_version: 2,
+        component: ProofComponent::PlatformKeyring,
+        row: ProofRow {
+            spike: SpikeId::Platform,
+            target: target.clone(),
+            session: phase_zero_session(target).map(str::to_owned),
+            backend: None,
+        },
+        proof: ProofPayload::PlatformKeyring(PlatformKeyringProof {
+            set_ok: passed,
+            get_ok: passed,
+            delete_ok: cleanup_error.is_none(),
+            missing_after_delete: cleanup_error.is_none(),
+        }),
+    };
+    write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)?;
 
     if let Some(error) = cleanup_error {
         anyhow::bail!("keyring smoke cleanup failed ({})", error.category());
@@ -998,7 +1015,7 @@ mod tests {
         keyring_smoke(
             &store,
             &evidence_path,
-            TargetId::new("macos-arm64-vt").unwrap(),
+            &TargetId::new("macos-arm64-vt").unwrap(),
         )
         .unwrap();
 

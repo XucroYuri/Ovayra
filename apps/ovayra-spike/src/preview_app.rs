@@ -11,7 +11,10 @@ use std::{
 
 use anyhow::{Context, Result};
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Weak};
-use spike_contracts::{Evidence, PhaseZeroProof, PreviewProof, SpikeId, TargetId, Verdict};
+use spike_contracts::{
+    PhaseZeroProof, PlatformNoTrayProof, PlatformTrayProof, PreviewProof, ProofComponent,
+    ProofPayload, ProofRow, SpikeId, TargetId, phase_zero_session,
+};
 use spike_media::{FfmpegPreview, Frame, LatestFrame};
 use sysinfo::{ProcessesToUpdate, System, get_current_pid};
 
@@ -267,9 +270,8 @@ pub(crate) fn run_tray_lifecycle(
     automation: bool,
     force_no_tray: bool,
     evidence_path: &Path,
-    target: TargetId,
+    target: &TargetId,
 ) -> Result<()> {
-    let started = Instant::now();
     let backend = parse_backend(std::env::var("SLINT_BACKEND").ok().as_deref())?;
     backend.select()?;
     let window = PreviewWindow::new().context("unable to create tray lifecycle window")?;
@@ -367,8 +369,37 @@ pub(crate) fn run_tray_lifecycle(
             && !metrics.failsafe_fired
     } && event_loop.is_ok();
 
+    let component = if fallback {
+        ProofComponent::PlatformNoTray
+    } else {
+        ProofComponent::PlatformTray
+    };
+    let proof = PhaseZeroProof {
+        schema_version: 2,
+        component,
+        row: ProofRow {
+            spike: SpikeId::Platform,
+            target: target.clone(),
+            session: phase_zero_session(target).map(str::to_owned),
+            backend: None,
+        },
+        proof: if fallback {
+            ProofPayload::PlatformNoTray(PlatformNoTrayProof {
+                accessible: metrics.window_accessible,
+                warning_shown: metrics.warning_visible,
+                quit: metrics.quit_callback,
+            })
+        } else {
+            ProofPayload::PlatformTray(PlatformTrayProof {
+                hidden: metrics.hidden,
+                restored: metrics.restored,
+                quit: metrics.quit_callback,
+            })
+        },
+    };
+    super::write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)?;
+    /*
     let mut evidence = Evidence::new(SpikeId::Platform, target);
-    evidence.measure("tray_status", unavailable_category.unwrap_or("available"))?;
     evidence.measure("automation_native_close_event", metrics.native_close_event)?;
     evidence.measure("automation_close_callback", metrics.close_callback)?;
     evidence.measure("automation_hide", metrics.hidden)?;
@@ -383,7 +414,7 @@ pub(crate) fn run_tray_lifecycle(
         if passed { Verdict::Pass } else { Verdict::Fail },
         started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
     );
-    super::write_finished_evidence(evidence_path, &evidence)?;
+    super::write_finished_evidence(evidence_path, &evidence)?; */
 
     if passed && fallback {
         println!("TRAY_FALLBACK=PASS window_accessible=true warning_visible=true");
