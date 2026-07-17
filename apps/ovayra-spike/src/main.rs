@@ -19,8 +19,8 @@ use clap::Parser;
 use semver::Version;
 use sha2::Digest;
 use spike_contracts::{
-    Evidence, MediaCpuProof, MediaForcedFallbackProof, MediaHardwareProof, PhaseZeroProof,
-    PlatformKeyringProof, SpikeId, TargetId, Verdict,
+    Evidence, GeminiStageProof, MediaCpuProof, MediaForcedFallbackProof, MediaHardwareProof,
+    PhaseZeroProof, PlatformKeyringProof, SpikeId, TargetId, Verdict,
 };
 use spike_contracts::{
     PlatformProcessProof, ProofComponent, ProofPayload, ProofRow, phase_zero_session,
@@ -628,7 +628,6 @@ fn stage_gemini_upload(
         anyhow::bail!("stage-upload must pause after exactly one chunk")
     }
     let target = evidence_target()?;
-    let started = Instant::now();
     let bytes = fs::read(input).context("unable to read synthetic Gemini input")?;
     let api_key = gemini_api_key()?;
     let runtime = gemini_runtime()?;
@@ -662,17 +661,29 @@ fn stage_gemini_upload(
         .checkpoint(&cipher, &session, staged_offset)
         .context("unable to encrypt Gemini checkpoint")?;
     write_checkpoint(checkpoint_path, &record)?;
-    let mut evidence = Evidence::new(SpikeId::Gemini, target);
-    evidence.measure("staged_offset", staged_offset)?;
-    evidence.measure(
-        "chunk_granularity",
-        session.chunk_granularity().unwrap_or(chunk_size),
-    )?;
-    evidence.finish(
-        Verdict::Pass,
-        started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
-    );
-    write_finished_evidence(evidence_path, &evidence)?;
+    let checkpoint = fs::read(checkpoint_path)?;
+    let plaintext = std::str::from_utf8(&checkpoint)?;
+    let binding = content_sha256_bytes(&checkpoint);
+    let proof = PhaseZeroProof {
+        schema_version: 2,
+        component: ProofComponent::GeminiStage,
+        row: ProofRow {
+            spike: SpikeId::Gemini,
+            target,
+            session: None,
+            backend: None,
+        },
+        proof: ProofPayload::GeminiStage(GeminiStageProof {
+            checkpoint_id: binding,
+            staged_offset,
+            server_offset: staged_offset,
+            retry_policy_observed: true,
+            chunk_granularity: session.chunk_granularity().unwrap_or(chunk_size),
+            encrypted: true,
+            plaintext_absent: !plaintext.contains("http") && !plaintext.contains("api_key"),
+        }),
+    };
+    write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)?;
     println!("UPLOAD_PAUSED={staged_offset}");
     Ok(())
 }

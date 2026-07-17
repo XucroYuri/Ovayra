@@ -380,6 +380,9 @@ fn validate_typed_proof(
                 && value.staged_offset > 0
                 && value.server_offset == value.staged_offset
                 && value.retry_policy_observed
+                && value.chunk_granularity > 0
+                && value.encrypted
+                && value.plaintext_absent
         }
         (ProofComponent::GeminiResume, ProofPayload::GeminiResume(value)) => {
             !value.checkpoint_id.is_empty()

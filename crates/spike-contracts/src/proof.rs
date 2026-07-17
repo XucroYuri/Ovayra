@@ -132,7 +132,10 @@ strict!(GeminiStageProof {
     checkpoint_id: String,
     staged_offset: u64,
     server_offset: u64,
-    retry_policy_observed: bool
+    retry_policy_observed: bool,
+    chunk_granularity: u64,
+    encrypted: bool,
+    plaintext_absent: bool
 });
 strict!(GeminiResumeProof {
     checkpoint_id: String,
