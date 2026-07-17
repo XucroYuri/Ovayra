@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, fs, path::Path};
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::{SpikeId, TargetId, Verdict};
+use crate::{Evidence, SpikeId, TargetId, Verdict};
 
 const CANONICAL_REQUIRED: &[(&str, &str, Option<&str>, Option<&str>)] = &[
     ("preview", "macos-arm64-vt", Some("aqua"), None),
@@ -81,6 +81,18 @@ pub enum MatrixError {
     RequiredVerdict(Verdict),
     #[error("evidence entry is not required by this matrix")]
     MissingRequiredEvidence,
+    #[error("missing required evidence: {0}")]
+    MissingEvidence(String),
+    #[error("unmatched evidence record")]
+    UnmatchedEvidence,
+    #[error("duplicate evidence record for required matrix row")]
+    DuplicateEvidence,
+    #[error("required media evidence is missing actual_backend")]
+    MissingActualBackend,
+    #[error("evidence backend does not match its required matrix row")]
+    WrongBackend,
+    #[error("required evidence is missing or violates {0}")]
+    Requirement(String),
 }
 
 impl PhaseZeroMatrix {
@@ -128,6 +140,73 @@ impl PhaseZeroMatrix {
         }
     }
 
+    /// Evaluates the exact Phase 0 evidence set without any waiver path.
+    ///
+    /// The caller is responsible for parsing each source document through the
+    /// strict [`Evidence`] schema first.  This method then rejects records that
+    /// do not map one-to-one to the frozen matrix, any non-passing verdict, and
+    /// evidence that does not satisfy the documented acceptance thresholds.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first deterministic fail-closed reason found while matching
+    /// records in input order, or a missing matrix row in canonical order.
+    pub fn evaluate(&self, reports: &[Evidence]) -> Result<(), MatrixError> {
+        let mut seen = BTreeSet::new();
+        let mut matched = Vec::with_capacity(reports.len());
+        for report in reports {
+            let required = self.match_report(report)?;
+            let key = required_key(required);
+            if !seen.insert(key) {
+                return Err(MatrixError::DuplicateEvidence);
+            }
+            let verdict = report
+                .verdict()
+                .ok_or_else(|| MatrixError::Requirement("finished verdict".to_owned()))?;
+            self.validate_required_verdict(required, verdict)?;
+            matched.push((required, report));
+        }
+        for (required, report) in matched {
+            validate_requirements(required, report)?;
+        }
+
+        for required in &self.required {
+            if !seen.contains(&required_key(required)) {
+                return Err(MatrixError::MissingEvidence(required_key(required)));
+            }
+        }
+        Ok(())
+    }
+
+    fn match_report<'a>(&'a self, report: &Evidence) -> Result<&'a RequiredEvidence, MatrixError> {
+        let measurements = report.measurements();
+        let requested_backend = measurement_str(measurements, "requested_backend");
+        let session = measurement_str(measurements, "session");
+        let candidates = self
+            .required
+            .iter()
+            .filter(|entry| entry.id == report.spike() && entry.target == *report.target())
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Err(MatrixError::UnmatchedEvidence);
+        }
+
+        let candidate = candidates.into_iter().find(|entry| {
+            entry.session.as_deref() == session && entry.backend.as_deref() == requested_backend
+        });
+        let Some(candidate) = candidate else {
+            if report.spike() == SpikeId::Media && requested_backend.is_some() {
+                return Err(MatrixError::WrongBackend);
+            }
+            return Err(MatrixError::UnmatchedEvidence);
+        };
+        if candidate.backend.is_some() && measurement_str(measurements, "actual_backend").is_none()
+        {
+            return Err(MatrixError::MissingActualBackend);
+        }
+        Ok(candidate)
+    }
+
     fn validate(&self) -> Result<(), MatrixError> {
         if self.required.is_empty() {
             return Err(MatrixError::Empty);
@@ -169,6 +248,196 @@ impl PhaseZeroMatrix {
         }
         Ok(())
     }
+}
+
+fn validate_requirements(
+    required: &RequiredEvidence,
+    report: &Evidence,
+) -> Result<(), MatrixError> {
+    match required.id {
+        SpikeId::Preview => validate_preview(report),
+        SpikeId::Media => validate_media(required, report),
+        SpikeId::Gemini => validate_gemini(report),
+        SpikeId::Platform => validate_platform(required, report),
+        SpikeId::Distribution => validate_distribution(required, report),
+    }
+}
+
+fn validate_preview(report: &Evidence) -> Result<(), MatrixError> {
+    let measurements = report.measurements();
+    let valid = measurement_u64(measurements, "observed_milli_fps")
+        .is_some_and(|value| (23_000..=25_000).contains(&value))
+        && measurement_u64(measurements, "requested_duration_seconds") == Some(120)
+        && measurement_u64(measurements, "measured_elapsed_ms")
+            .is_some_and(|value| value >= 120_000)
+        && report.duration_ms().is_some_and(|value| value >= 120_000)
+        && measurement_u64(measurements, "frames_read").is_some_and(|value| value > 0)
+        && measurement_u64(measurements, "frames_applied").is_some_and(|value| value > 0)
+        && measurement_bool(measurements, "automation_hide") == Some(true)
+        && measurement_bool(measurements, "automation_restore") == Some(true)
+        && measurement_u64(measurements, "p95_ms").is_some_and(|value| value <= 100)
+        && measurement_u64(measurements, "rss_growth_mib").is_some_and(|value| value <= 64)
+        && measurement_bool(measurements, "rss_samples_complete") == Some(true)
+        && measurement_u64(measurements, "event_loop_errors") == Some(0)
+        && measurement_u64(measurements, "preview_stream_errors") == Some(0);
+    if valid {
+        Ok(())
+    } else {
+        Err(MatrixError::Requirement("preview thresholds".to_owned()))
+    }
+}
+
+fn validate_media(required: &RequiredEvidence, report: &Evidence) -> Result<(), MatrixError> {
+    let measurements = report.measurements();
+    let backend = required
+        .backend
+        .as_deref()
+        .expect("media rows have a backend");
+    let expected_actual = if backend == "cpu-fallback" {
+        "cpu"
+    } else {
+        backend
+    };
+    if measurement_str(measurements, "actual_backend") != Some(expected_actual) {
+        return Err(MatrixError::WrongBackend);
+    }
+    if !sha256(measurement_str(measurements, "content_sha256")) {
+        return Err(MatrixError::Requirement("media content SHA-256".to_owned()));
+    }
+    if backend == "cpu-fallback"
+        && !(measurement_str(measurements, "video_codec") == Some("vp9")
+            && measurement_str(measurements, "audio_codec") == Some("opus")
+            && measurement_u64(measurements, "media_duration_seconds")
+                .is_some_and(|value| value >= 10))
+    {
+        return Err(MatrixError::Requirement(
+            "CPU fallback VP9/Opus WebM".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_gemini(report: &Evidence) -> Result<(), MatrixError> {
+    let measurements = report.measurements();
+    let valid = measurement_u64(measurements, "observed_server_offset")
+        .is_some_and(|value| value > 0)
+        && measurement_bool(measurements, "offset_mismatch") == Some(false)
+        && measurement_bool(measurements, "analysis_nonempty") == Some(true)
+        && measurement_str(measurements, "remote_cleanup_state") == Some("deleted")
+        && measurement_str(measurements, "checkpoint_cleanup_state") == Some("deleted")
+        && measurement_str(measurements, "model") == Some("gemini-3.1-flash-lite")
+        && measurement_u64(measurements, "http_status") == Some(200);
+    if valid {
+        Ok(())
+    } else {
+        Err(MatrixError::Requirement(
+            "Gemini resume, ACTIVE analysis, and cleanup".to_owned(),
+        ))
+    }
+}
+
+fn validate_platform(required: &RequiredEvidence, report: &Evidence) -> Result<(), MatrixError> {
+    let measurements = report.measurements();
+    let common = [
+        "write_status",
+        "read_status",
+        "cleanup_status",
+        "tray_status",
+        "process_group_status",
+    ]
+    .iter()
+    .all(|name| measurement_str(measurements, name) == Some("pass"))
+        && measurement_u64(measurements, "child_tree_elapsed_ms")
+            .is_some_and(|value| value <= 5_000);
+    let linux_fallback = !required.target.as_str().starts_with("linux-")
+        || (measurement_str(measurements, "forced_no_tray_status") == Some("window-accessible")
+            && measurement_bool(measurements, "no_tray_warning_shown") == Some(true));
+    if common && linux_fallback {
+        Ok(())
+    } else {
+        Err(MatrixError::Requirement(
+            "keyring, tray, or process-group proof".to_owned(),
+        ))
+    }
+}
+
+fn validate_distribution(
+    required: &RequiredEvidence,
+    report: &Evidence,
+) -> Result<(), MatrixError> {
+    let measurements = report.measurements();
+    let common = [
+        ("bundle_validation", "pass"),
+        ("license_policy", "LGPL-only"),
+        ("source_correspondence", "pass"),
+        ("sbom_status", "pass"),
+        ("ffmpeg_keyring_status", "pass"),
+        ("native_double_build", "pass"),
+        ("platform_signature", "pass"),
+    ]
+    .iter()
+    .all(|(name, value)| measurement_str(measurements, name) == Some(*value))
+        && measurement_bool(measurements, "update_tamper_rejected") == Some(true)
+        && package_formats(measurements, required.target.as_str());
+    let notarized = required.target.as_str() != "macos-arm64-vt"
+        || measurement_str(measurements, "notarization") == Some("pass");
+    if common && notarized {
+        Ok(())
+    } else {
+        Err(MatrixError::Requirement(
+            "native package, signature, source, SBOM, or double-build proof".to_owned(),
+        ))
+    }
+}
+
+fn package_formats(
+    measurements: &std::collections::BTreeMap<String, serde_json::Value>,
+    target: &str,
+) -> bool {
+    let expected: &[&str] = match target {
+        "macos-arm64-vt" => &["app", "dmg"],
+        "windows-x64-mf" => &["msi"],
+        "linux-x64-vaapi-wayland" => &["appimage", "deb"],
+        _ => return false,
+    };
+    let Some(values) = measurements
+        .get("package_formats")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    let actual = values
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<BTreeSet<_>>();
+    actual.len() == expected.len() && expected.iter().all(|value| actual.contains(value))
+}
+
+fn measurement_str<'a>(
+    measurements: &'a std::collections::BTreeMap<String, serde_json::Value>,
+    name: &str,
+) -> Option<&'a str> {
+    measurements.get(name).and_then(serde_json::Value::as_str)
+}
+
+fn measurement_u64(
+    measurements: &std::collections::BTreeMap<String, serde_json::Value>,
+    name: &str,
+) -> Option<u64> {
+    measurements.get(name).and_then(serde_json::Value::as_u64)
+}
+
+fn measurement_bool(
+    measurements: &std::collections::BTreeMap<String, serde_json::Value>,
+    name: &str,
+) -> Option<bool> {
+    measurements.get(name).and_then(serde_json::Value::as_bool)
+}
+
+fn sha256(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
 }
 
 fn required_key(entry: &RequiredEvidence) -> String {

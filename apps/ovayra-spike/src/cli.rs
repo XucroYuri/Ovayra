@@ -13,6 +13,15 @@ pub(crate) struct Cli {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     Version,
+    /// Fail closed unless every frozen Phase 0 real-device record is present and proven.
+    Gate {
+        #[arg(long)]
+        evidence_dir: PathBuf,
+        #[arg(long)]
+        matrix: PathBuf,
+        #[arg(long)]
+        report: PathBuf,
+    },
     #[command(hide = true)]
     ChildTree {
         #[arg(long)]

@@ -99,7 +99,7 @@ impl<'de> Deserialize<'de> for TargetId {
 /// let evidence: spike_contracts::Evidence = todo!();
 /// serde_json::to_string(&evidence).unwrap();
 /// ~~~
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Evidence {
     schema_version: u32,
     spike: SpikeId,

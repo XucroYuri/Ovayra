@@ -123,6 +123,15 @@ impl std::error::Error for LintError {}
 /// Scans only bounded regular files below `directory`, never follows symlinks,
 /// and reports a stable relative-path/category diagnostic on rejection.
 pub(crate) fn lint_dir(directory: &Path, text_mode: bool) -> Result<()> {
+    lint_dir_quiet(directory, text_mode)?;
+    println!("EVIDENCE_LINT=PASS");
+    Ok(())
+}
+
+/// Runs the same bounded traversal and redaction checks without printing a
+/// success token. The final acceptance gate uses this so a rejected gate never
+/// emits a misleading success marker.
+pub(crate) fn lint_dir_quiet(directory: &Path, text_mode: bool) -> Result<()> {
     let metadata = match fs::symlink_metadata(directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -160,7 +169,6 @@ pub(crate) fn lint_dir(directory: &Path, text_mode: bool) -> Result<()> {
             return Err(LintError::new(".", Category::Oversized).into());
         }
     }
-    println!("EVIDENCE_LINT=PASS");
     Ok(())
 }
 

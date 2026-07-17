@@ -1,6 +1,7 @@
 mod child_tree;
 mod cli;
 mod evidence_lint;
+mod gate;
 mod gemini_orchestration;
 mod preview_app;
 
@@ -42,6 +43,11 @@ const KEYRING_SMOKE_ACCOUNT_PREFIX: &str = "phase-0-keyring-smoke";
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Version => println!("ovayra-spike {}", env!("CARGO_PKG_VERSION")),
+        Command::Gate {
+            evidence_dir,
+            matrix,
+            report,
+        } => gate::run(&evidence_dir, &matrix, &report)?,
         Command::ChildTree {
             malformed_report,
             delay_report,

@@ -30,7 +30,16 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets
 cargo run --locked -p ovayra-spike -- evidence lint --dir docs/phase-0/evidence
+cargo run --locked -p ovayra-spike -- gate --evidence-dir docs/phase-0/evidence --matrix packaging/phase-0-matrix.toml --report docs/phase-0/feasibility-report.md
 ```
+
+The final command is fail-closed. It invokes the evidence linter before parsing
+the strict schema, maps every record one-to-one to the frozen 33-row matrix,
+and validates the preview, media, Gemini, platform, and distribution thresholds.
+It writes an atomic deterministic report containing only source JSON hashes;
+source names and evidence contents are never echoed. `PHASE_0_GATE=PASS` is the
+only acceptance result. A `NO_GO` or `FAIL` means that no ADR becomes accepted
+and no acceptance tag may be created.
 
 Package or notarization logs must use bounded text mode before upload:
 
