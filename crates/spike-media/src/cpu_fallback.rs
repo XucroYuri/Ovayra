@@ -458,6 +458,39 @@ impl FfprobeReport {
         Self::from_child_output(process.status.success(), &process.stdout, bytes)
     }
 
+    /// Runs the bounded ffprobe query and validates a native H.264/AAC fixture.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redacted error when the child fails, output is malformed, or either required
+    /// codec is absent.
+    pub fn read_h264_aac(ffprobe: impl AsRef<Path>, output: &Path) -> Result<Self, FfprobeError> {
+        let bytes = fs::metadata(output).map_err(|_| FfprobeError::Spawn)?.len();
+        let process = collect_child(
+            ffprobe.as_ref(),
+            [
+                "-v",
+                "error",
+                "-show_entries",
+                "format=format_name,duration:stream=codec_name,codec_type,pix_fmt",
+                "-of",
+                "json",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .chain(std::iter::once(output.as_os_str().to_owned())),
+            Duration::from_secs(5),
+            64 * 1024,
+            16 * 1024,
+        )
+        .map_err(|error| FfprobeError::from_collection(&error))?;
+        if !process.status.success() {
+            return Err(FfprobeError::Failed);
+        }
+        let json = std::str::from_utf8(&process.stdout).map_err(|_| FfprobeError::MalformedJson)?;
+        Self::from_h264_aac_json(json, bytes)
+    }
+
     /// Validates a fully-drained ffprobe child result without exposing child logs.
     ///
     /// # Errors
@@ -511,6 +544,47 @@ impl FfprobeReport {
             || video.pix_fmt.as_deref() != Some("yuv420p")
             || audio.codec_name != "opus"
         {
+            return Err(FfprobeError::IncompatibleStreams);
+        }
+        Ok(Self {
+            container: value.format.format_name,
+            duration_seconds,
+            video_codec: Some(video.codec_name.clone()),
+            audio_codec: Some(audio.codec_name.clone()),
+            video_pixel_format: video.pix_fmt.clone(),
+        })
+    }
+
+    /// Validates JSON metadata for the H.264/AAC fixture used by hardware self-tests.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero-byte output, malformed metadata, missing streams, and incompatible codecs.
+    pub fn from_h264_aac_json(input: &str, output_bytes: u64) -> Result<Self, FfprobeError> {
+        if output_bytes == 0 {
+            return Err(FfprobeError::ZeroBytes);
+        }
+        let value: ProbeDocument =
+            serde_json::from_str(input).map_err(|_| FfprobeError::MalformedJson)?;
+        let duration_seconds = value
+            .format
+            .duration
+            .parse::<f64>()
+            .ok()
+            .filter(|duration| duration.is_finite() && *duration > 0.0)
+            .ok_or(FfprobeError::InvalidDuration)?;
+        let video = value
+            .streams
+            .iter()
+            .find(|stream| stream.codec_type == "video");
+        let audio = value
+            .streams
+            .iter()
+            .find(|stream| stream.codec_type == "audio");
+        let (Some(video), Some(audio)) = (video, audio) else {
+            return Err(FfprobeError::MissingStream);
+        };
+        if video.codec_name != "h264" || audio.codec_name != "aac" {
             return Err(FfprobeError::IncompatibleStreams);
         }
         Ok(Self {

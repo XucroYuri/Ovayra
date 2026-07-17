@@ -88,6 +88,22 @@ fn main() -> Result<()> {
         )?,
         Command::Media {
             command:
+                MediaCommand::GenerateHardwareFixture {
+                    backend,
+                    ffmpeg,
+                    ffprobe,
+                    output,
+                    render_device,
+                },
+        } => generate_hardware_fixture(
+            backend,
+            &ffmpeg,
+            &ffprobe,
+            &output,
+            render_device.as_deref(),
+        )?,
+        Command::Media {
+            command:
                 MediaCommand::CpuFallback {
                     ffmpeg,
                     ffprobe,
@@ -1226,6 +1242,44 @@ fn self_test(
     );
     write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)?;
     println!("ACTUAL_BACKEND={}", actual.as_str());
+    Ok(())
+}
+
+/// Generates the local input for a hardware self-test through the same typed backend plan that
+/// selects its native encoder. This is deliberately not evidence: the following self-test and
+/// forced-fallback commands produce the gate proofs.
+fn generate_hardware_fixture(
+    backend: Backend,
+    ffmpeg: &Path,
+    ffprobe: &Path,
+    output: &Path,
+    render_device: Option<&Path>,
+) -> Result<()> {
+    if backend.is_cpu() {
+        anyhow::bail!("a hardware fixture requires a hardware backend")
+    }
+    let parent = output.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).context("unable to create hardware fixture directory")?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("unable to create bounded hardware-fixture runtime")?;
+    let plan = HardwarePlan::self_test(backend);
+    let (_, evidence) = runtime
+        .block_on(FfmpegRunner::new(ffmpeg).run_os_with_timeout(
+            plan.fixture_args(output, render_device),
+            Duration::from_secs(30),
+        ))
+        .context("native hardware fixture generation did not complete")?;
+    if evidence.exit_code != Some(0) {
+        anyhow::bail!("native hardware fixture generation failed")
+    }
+    let report = FfprobeReport::read_h264_aac(ffprobe, output)
+        .context("native fixture did not pass the H.264/AAC ffprobe contract")?;
+    if !(9.5..=10.5).contains(&report.duration_seconds) {
+        anyhow::bail!("native fixture duration was not approximately ten seconds")
+    }
+    println!("HARDWARE_FIXTURE=PASS encoder={}", backend.as_str());
     Ok(())
 }
 

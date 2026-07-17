@@ -576,29 +576,67 @@ impl HardwarePlan {
         args
     }
 
-    /// The canonical generated input, shared by every backend self-test.
+    /// Builds the native hardware-encoded fixture used by a backend's self-test.
+    ///
+    /// The fixture intentionally exercises the encoder selected for the device.  VAAPI receives
+    /// an explicit DRM device and uploads the lavfi frames before encoding; the other encoders
+    /// accept the generated frames directly.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this plan was constructed for `Backend::Cpu`.
     #[must_use]
-    pub fn source_args(&self) -> &'static [&'static str] {
-        const SOURCE: &[&str] = &[
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc2=size=1280x720:rate=30",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=1000:sample_rate=48000",
-            "-t",
-            "10",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "synthetic-h264-aac.mp4",
-        ];
-        SOURCE
+    pub fn fixture_args(&self, output: &Path, render_device: Option<&Path>) -> Vec<OsString> {
+        let mut args = vec![OsString::from("-y"), OsString::from("-nostdin")];
+        if matches!(self.backend, Backend::Vaapi) {
+            let device = render_device.unwrap_or_else(|| Path::new("/dev/dri/renderD128"));
+            args.extend([
+                OsString::from("-vaapi_device"),
+                device.as_os_str().to_owned(),
+            ]);
+        }
+        args.extend([
+            OsString::from("-f"),
+            OsString::from("lavfi"),
+            OsString::from("-i"),
+            OsString::from("testsrc2=size=1280x720:rate=30"),
+            OsString::from("-f"),
+            OsString::from("lavfi"),
+            OsString::from("-i"),
+            OsString::from("sine=frequency=1000:sample_rate=48000"),
+            OsString::from("-t"),
+            OsString::from("10"),
+        ]);
+        match self.backend {
+            Backend::VideoToolbox => args.extend([
+                OsString::from("-c:v"),
+                OsString::from("h264_videotoolbox"),
+                OsString::from("-pix_fmt"),
+                OsString::from("yuv420p"),
+            ]),
+            Backend::D3d11vaMf => args.extend([
+                OsString::from("-c:v"),
+                OsString::from("h264_mf"),
+                OsString::from("-pix_fmt"),
+                OsString::from("yuv420p"),
+            ]),
+            Backend::NvencNvdec => args.extend([
+                OsString::from("-c:v"),
+                OsString::from("h264_nvenc"),
+                OsString::from("-pix_fmt"),
+                OsString::from("yuv420p"),
+            ]),
+            Backend::Vaapi => args.extend([
+                OsString::from("-vf"),
+                OsString::from("format=nv12,hwupload"),
+                OsString::from("-c:v"),
+                OsString::from("h264_vaapi"),
+            ]),
+            Backend::Cpu => panic!("CPU is a fallback output, not a hardware fixture plan"),
+        }
+        args.extend([OsString::from("-c:a"), OsString::from("aac")]);
+        args.push(output.as_os_str().to_owned());
+        args
     }
 
     #[must_use]

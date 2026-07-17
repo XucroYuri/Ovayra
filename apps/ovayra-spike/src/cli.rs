@@ -72,6 +72,19 @@ pub(crate) enum Command {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum MediaCommand {
+    /// Generate and validate a ten-second native H.264/AAC hardware fixture.
+    GenerateHardwareFixture {
+        #[arg(long, value_parser = parse_hardware_backend)]
+        backend: Backend,
+        #[arg(long)]
+        ffmpeg: PathBuf,
+        #[arg(long)]
+        ffprobe: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        render_device: Option<PathBuf>,
+    },
     /// Run the six exact `FFmpeg` inventory commands and persist redacted evidence.
     Inventory {
         #[arg(long)]
@@ -743,6 +756,29 @@ mod tests {
             inventory.command,
             Command::Media {
                 command: MediaCommand::Inventory { .. }
+            }
+        ));
+
+        let fixture = Cli::try_parse_from([
+            "ovayra-spike",
+            "media",
+            "generate-hardware-fixture",
+            "--backend",
+            "vaapi",
+            "--ffmpeg",
+            "bundle/ffmpeg",
+            "--ffprobe",
+            "bundle/ffprobe",
+            "--output",
+            "hardware-input.mp4",
+            "--render-device",
+            "/dev/dri/renderD128",
+        ])
+        .unwrap();
+        assert!(matches!(
+            fixture.command,
+            Command::Media {
+                command: MediaCommand::GenerateHardwareFixture { .. }
             }
         ));
 

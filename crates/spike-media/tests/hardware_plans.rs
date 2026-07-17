@@ -97,16 +97,85 @@ fn vaapi_plan_keeps_frames_on_the_hardware_surface() {
 }
 
 #[test]
-fn all_plans_share_the_same_generated_ten_second_h264_aac_source() {
-    let sources: Vec<_> = Backend::ALL
+fn fixture_generation_uses_the_exact_native_encoder_for_each_backend() {
+    let output = std::path::Path::new("fixture.mp4");
+    let fixture = |backend, device| {
+        HardwarePlan::self_test(backend)
+            .fixture_args(output, device)
+            .into_iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    };
+
+    for (backend, encoder) in [
+        (Backend::VideoToolbox, "h264_videotoolbox"),
+        (Backend::D3d11vaMf, "h264_mf"),
+        (Backend::NvencNvdec, "h264_nvenc"),
+    ] {
+        let args = fixture(backend, None);
+        assert_eq!(
+            args,
+            vec![
+                "-y",
+                "-nostdin",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=1280x720:rate=30",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:sample_rate=48000",
+                "-t",
+                "10",
+                "-c:v",
+                encoder,
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "fixture.mp4",
+            ]
+        );
+    }
+}
+
+#[test]
+fn vaapi_fixture_generation_selects_the_device_and_upload_filter() {
+    let args = HardwarePlan::self_test(Backend::Vaapi)
+        .fixture_args(
+            std::path::Path::new("fixture.mp4"),
+            Some(std::path::Path::new("/dev/dri/renderD129")),
+        )
         .into_iter()
-        .map(HardwarePlan::self_test)
-        .map(|plan| plan.source_args().to_vec())
-        .collect();
-    assert!(sources.windows(2).all(|window| window[0] == window[1]));
-    assert!(sources[0].windows(2).any(|w| w == ["-t", "10"]));
-    assert!(sources[0].windows(2).any(|w| w == ["-c:v", "libx264"]));
-    assert!(sources[0].windows(2).any(|w| w == ["-c:a", "aac"]));
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args,
+        vec![
+            "-y",
+            "-nostdin",
+            "-vaapi_device",
+            "/dev/dri/renderD129",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=1280x720:rate=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=48000",
+            "-t",
+            "10",
+            "-vf",
+            "format=nv12,hwupload",
+            "-c:v",
+            "h264_vaapi",
+            "-c:a",
+            "aac",
+            "fixture.mp4",
+        ]
+    );
 }
 
 #[test]

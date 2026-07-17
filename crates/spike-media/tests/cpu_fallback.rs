@@ -100,6 +100,23 @@ fn ffprobe_json_rejects_invalid_media_reports() {
 }
 
 #[test]
+fn fixture_ffprobe_requires_h264_aac_and_a_positive_duration() {
+    let valid = r#"{"format":{"format_name":"mov,mp4,m4a,3gp,3g2,mj2","duration":"10.0"},"streams":[{"codec_type":"video","codec_name":"h264","pix_fmt":"yuv420p"},{"codec_type":"audio","codec_name":"aac"}]}"#;
+    let report = FfprobeReport::from_h264_aac_json(valid, 12).unwrap();
+    assert_eq!(report.video_codec.as_deref(), Some("h264"));
+    assert_eq!(report.audio_codec.as_deref(), Some("aac"));
+    assert!((report.duration_seconds - 10.0).abs() < f64::EPSILON);
+
+    for invalid in [
+        r#"{"format":{"format_name":"mp4","duration":"10"},"streams":[{"codec_type":"video","codec_name":"vp9"},{"codec_type":"audio","codec_name":"aac"}]}"#,
+        r#"{"format":{"format_name":"mp4","duration":"10"},"streams":[{"codec_type":"video","codec_name":"h264"},{"codec_type":"audio","codec_name":"opus"}]}"#,
+        r#"{"format":{"format_name":"mp4","duration":"0"},"streams":[{"codec_type":"video","codec_name":"h264"},{"codec_type":"audio","codec_name":"aac"}]}"#,
+    ] {
+        assert!(FfprobeReport::from_h264_aac_json(invalid, 12).is_err());
+    }
+}
+
+#[test]
 fn average_speed_uses_progress_events_and_evidence_values_are_redacted() {
     let speed = CpuFallback::average_speed_from_progress(
         b"speed=1.0x\nprogress=continue\nspeed=3.0x\nprogress=end\n",
