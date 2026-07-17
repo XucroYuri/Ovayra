@@ -5,6 +5,7 @@ on:
     paths:
       - "scripts/**"
       - "packaging/**"
+      - "crates/**"
       - "crates/spike-release/**"
       - "apps/ovayra-spike/**"
       - "Cargo.toml"
@@ -15,6 +16,7 @@ on:
     paths:
       - "scripts/**"
       - "packaging/**"
+      - "crates/**"
       - "crates/spike-release/**"
       - "apps/ovayra-spike/**"
       - "Cargo.toml"
