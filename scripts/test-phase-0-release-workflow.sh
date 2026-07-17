@@ -2,6 +2,7 @@
 set -euo pipefail
 
 workflow=.github/workflows/phase-0-release.yml
+inspector=scripts/inspect-native-package.sh
 for required in \
   'scripts/inspect-native-package.sh --kind app' \
   'scripts/inspect-native-package.sh --kind dmg' \
@@ -14,3 +15,6 @@ for required in \
   'release version does not match tag'; do
   rg -F --quiet "$required" "$workflow" || { echo "workflow missing required release hardening: $required" >&2; exit 1; }
 done
+rg -F --quiet 'hdiutil attach -plist -readonly -nobrowse' "$inspector"
+rg -F --quiet 'parse-hdiutil-plist.py --device' "$inspector"
+rg -F --quiet 'hdiutil detach "$device"' "$inspector"

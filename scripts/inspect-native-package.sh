@@ -23,8 +23,10 @@ fi
 
 temporary="$(mktemp -d)"
 mount_point=''
+device=''
 cleanup() {
-  if [ -n "$mount_point" ]; then hdiutil detach "$mount_point" >/dev/null 2>&1 || true; fi
+  if [ -n "$device" ]; then hdiutil detach "$device" >/dev/null 2>&1 || true
+  elif [ -n "$mount_point" ]; then hdiutil detach "$mount_point" >/dev/null 2>&1 || true; fi
   rm -rf "$temporary"
 }
 trap cleanup EXIT
@@ -55,8 +57,10 @@ case "$kind" in
     ;;
   dmg)
     test -f "$artifact" || usage
-    mount_point="$(hdiutil attach -nobrowse -readonly "$artifact" | awk '/\/Volumes\// {print $3; exit}')"
-    test -n "$mount_point" || { echo 'could not mount DMG' >&2; exit 1; }
+    attach_plist="$temporary/attach.plist"
+    hdiutil attach -plist -readonly -nobrowse "$artifact" > "$attach_plist"
+    device="$(scripts/parse-hdiutil-plist.py --device "$attach_plist")"
+    mount_point="$(scripts/parse-hdiutil-plist.py "$attach_plist")"
     app="$(find "$mount_point" -maxdepth 1 -type d -name '*.app' -print)"
     test "$(printf '%s\n' "$app" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 || { echo 'DMG must contain exactly one app' >&2; exit 1; }
     inspect_root "$app" ovayra-spike ffmpeg
