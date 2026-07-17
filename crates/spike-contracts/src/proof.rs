@@ -197,6 +197,72 @@ pub enum ProofError {
 }
 
 impl PhaseZeroProof {
+    #[must_use]
+    pub fn preview(target: &TargetId, renderer: &str, value: &PreviewProof) -> Self {
+        Self {
+            schema_version: 2,
+            component: ProofComponent::Preview,
+            row: ProofRow {
+                spike: SpikeId::Preview,
+                target: target.clone(),
+                session: phase_zero_session(target).map(str::to_owned),
+                backend: None,
+            },
+            proof: ProofPayload::Preview(PreviewProof {
+                renderer: renderer.to_owned(),
+                ..value.clone()
+            }),
+        }
+    }
+
+    #[must_use]
+    pub fn media_cpu(target: TargetId, value: MediaCpuProof) -> Self {
+        Self {
+            schema_version: 2,
+            component: ProofComponent::MediaCpu,
+            row: ProofRow {
+                spike: SpikeId::Media,
+                target,
+                session: None,
+                backend: Some("cpu-fallback".to_owned()),
+            },
+            proof: ProofPayload::MediaCpu(value),
+        }
+    }
+
+    #[must_use]
+    pub fn media_hardware(target: TargetId, backend: String, value: MediaHardwareProof) -> Self {
+        Self {
+            schema_version: 2,
+            component: ProofComponent::MediaHardware,
+            row: ProofRow {
+                spike: SpikeId::Media,
+                target,
+                session: None,
+                backend: Some(backend),
+            },
+            proof: ProofPayload::MediaHardware(value),
+        }
+    }
+
+    #[must_use]
+    pub fn media_forced_fallback(
+        target: TargetId,
+        backend: String,
+        value: MediaForcedFallbackProof,
+    ) -> Self {
+        Self {
+            schema_version: 2,
+            component: ProofComponent::MediaForcedFallback,
+            row: ProofRow {
+                spike: SpikeId::Media,
+                target,
+                session: None,
+                backend: Some(backend),
+            },
+            proof: ProofPayload::MediaForcedFallback(value),
+        }
+    }
     /// Parses one exact schema-v2 proof document.
     ///
     /// # Errors
@@ -278,5 +344,16 @@ impl PhaseZeroProof {
         } else {
             Err(ProofError::Component)
         }
+    }
+}
+
+#[must_use]
+pub fn phase_zero_session(target: &TargetId) -> Option<&str> {
+    match target.as_str() {
+        "macos-arm64-vt" => Some("aqua"),
+        "windows-x64-mf" | "windows-x64-nvidia" => Some("windows"),
+        "linux-x64-vaapi-wayland" => Some("wayland"),
+        "linux-x64-vaapi-x11" => Some("x11"),
+        _ => None,
     }
 }

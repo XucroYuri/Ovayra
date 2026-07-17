@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer, Weak};
-use spike_contracts::{Evidence, SpikeId, TargetId, Verdict};
+use spike_contracts::{Evidence, PhaseZeroProof, PreviewProof, SpikeId, TargetId, Verdict};
 use spike_media::{FfmpegPreview, Frame, LatestFrame};
 use sysinfo::{ProcessesToUpdate, System, get_current_pid};
 
@@ -89,7 +89,6 @@ impl PreviewGateInput {
 struct PreviewGateResult {
     passed: bool,
     observed_milli_fps: u64,
-    rss_samples_complete: bool,
 }
 
 struct PreviewEvidenceInput<'a> {
@@ -97,7 +96,6 @@ struct PreviewEvidenceInput<'a> {
     dropped: u64,
     preview_stream_errors: u64,
     target: TargetId,
-    started: Instant,
     evidence_path: &'a Path,
     automation: bool,
     requested_duration_seconds: u64,
@@ -128,7 +126,6 @@ fn evaluate_preview_gate(input: PreviewGateInput) -> PreviewGateResult {
             && input.preview_stream_errors == 0
             && input.rss_samples_complete,
         observed_milli_fps,
-        rss_samples_complete: input.rss_samples_complete,
     }
 }
 
@@ -558,7 +555,6 @@ pub(crate) fn run_preview(
         dropped: bridge.latest.dropped_frames(),
         preview_stream_errors: stream_errors.load(Ordering::Relaxed),
         target,
-        started,
         evidence_path,
         automation,
         requested_duration_seconds: duration_seconds,
@@ -573,7 +569,6 @@ fn finish_preview_evidence(input: PreviewEvidenceInput<'_>) -> Result<()> {
         dropped,
         preview_stream_errors,
         target,
-        started,
         evidence_path,
         automation,
         requested_duration_seconds,
@@ -598,33 +593,23 @@ fn finish_preview_evidence(input: PreviewEvidenceInput<'_>) -> Result<()> {
             requested_duration_seconds,
         ),
     });
-    let mut evidence = Evidence::new(SpikeId::Preview, target);
-    evidence.measure("frames_read", metrics.frames_read)?;
-    evidence.measure("frames_applied", metrics.frames_applied)?;
-    evidence.measure("frames_dropped", dropped)?;
-    evidence.measure("p50_ms", metrics.percentile_millis(50))?;
-    evidence.measure("p95_ms", p95)?;
-    evidence.measure("p99_ms", metrics.percentile_millis(99))?;
-    evidence.measure("rss_samples_bytes", &metrics.rss_samples)?;
-    evidence.measure("rss_samples_complete", gate.rss_samples_complete)?;
-    evidence.measure("rss_growth_mib", rss_growth_mib)?;
-    evidence.measure("renderer_backend", backend.evidence_name())?;
-    evidence.measure("requested_duration_seconds", requested_duration_seconds)?;
-    evidence.measure("measured_elapsed_ms", elapsed.as_millis())?;
-    evidence.measure("observed_milli_fps", gate.observed_milli_fps)?;
-    evidence.measure("automation_hide", metrics.hidden)?;
-    evidence.measure("automation_restore", metrics.restored)?;
-    evidence.measure("event_loop_errors", metrics.event_loop_errors)?;
-    evidence.measure("preview_stream_errors", preview_stream_errors)?;
-    evidence.finish(
-        if gate.passed {
-            Verdict::Pass
-        } else {
-            Verdict::Fail
-        },
-        started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
-    );
-    super::write_finished_evidence(evidence_path, &evidence)?;
+    let preview = PreviewProof {
+        requested_duration_ms: requested_duration_seconds.saturating_mul(1_000),
+        measured_duration_ms: elapsed.as_millis().try_into().unwrap_or(u64::MAX),
+        milli_fps: gate.observed_milli_fps,
+        p95_ms: p95,
+        rss_growth_mib,
+        frames_read: metrics.frames_read,
+        frames_applied: metrics.frames_applied,
+        frames_dropped: dropped,
+        hidden: !automation || metrics.hidden,
+        restored: !automation || metrics.restored,
+        event_loop_errors: metrics.event_loop_errors,
+        stream_errors: preview_stream_errors,
+        renderer: String::new(),
+    };
+    let proof = PhaseZeroProof::preview(&target, backend.evidence_name(), &preview);
+    super::write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)?;
     let rounded_fps = gate.observed_milli_fps / 1_000;
     if gate.passed {
         println!("PREVIEW=PASS fps={rounded_fps} p95_ms={p95} rss_growth_mib={rss_growth_mib}");

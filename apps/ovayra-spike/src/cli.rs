@@ -117,7 +117,7 @@ pub(crate) enum MediaCommand {
         ffmpeg: PathBuf,
         #[arg(long)]
         ffprobe: PathBuf,
-        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(10..))]
         seconds: u64,
         #[arg(long)]
         output: PathBuf,

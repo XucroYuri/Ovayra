@@ -18,11 +18,14 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use semver::Version;
 use sha2::Digest;
-use spike_contracts::{Evidence, SpikeId, TargetId, Verdict};
+use spike_contracts::{
+    Evidence, MediaCpuProof, MediaForcedFallbackProof, MediaHardwareProof, PhaseZeroProof, SpikeId,
+    TargetId, Verdict,
+};
 use spike_gemini::GeminiClient;
 use spike_media::{
-    AttemptOutcome, Backend, CpuFallback, DowngradeCode, ExecutionPolicy, FORCED_FAILURE_DEVICE,
-    FfmpegError, FfmpegRunner, FfprobeReport, HardwarePlan, ProgressParser, content_sha256_bytes,
+    AttemptOutcome, Backend, CpuFallback, ExecutionPolicy, FORCED_FAILURE_DEVICE, FfmpegError,
+    FfmpegRunner, FfprobeReport, HardwarePlan, ProgressParser, content_sha256_bytes,
 };
 use spike_platform::{
     EncryptedRecord, EnvelopeCipher, OsSecretStore, SecretStore, SecretStoreError,
@@ -701,7 +704,6 @@ fn self_test(
     evidence_path: &Path,
 ) -> Result<()> {
     let target = evidence_target()?;
-    let started = Instant::now();
     let mut policy = ExecutionPolicy::prefer(backend);
     if policy.next_backend() != Some(backend) {
         anyhow::bail!("hardware backend is quarantined; ordinary self-test will not fall back")
@@ -715,15 +717,19 @@ fn self_test(
             anyhow::bail!("hardware self-test failed; CPU fallback is intentionally disabled")
         }
     };
-    let mut evidence = Evidence::new(SpikeId::Media, target);
-    record_backend_evidence(&mut evidence, backend, actual, policy.downgrade_code())?;
     let output_bytes = fs::read(output).context("unable to read hardware self-test output")?;
-    evidence.measure("content_sha256", content_sha256_bytes(&output_bytes))?;
-    evidence.finish(
-        Verdict::Pass,
-        started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+    let report = FfprobeReport::read(ffprobe, output)?;
+    let proof = PhaseZeroProof::media_hardware(
+        target,
+        backend.as_str().to_owned(),
+        MediaHardwareProof {
+            requested_backend: backend.as_str().to_owned(),
+            actual_backend: actual.as_str().to_owned(),
+            output_duration_seconds: rounded_duration_seconds(report.duration_seconds)?,
+            output_sha256: content_sha256_bytes(&output_bytes),
+        },
     );
-    write_finished_evidence(evidence_path, &evidence)?;
+    write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)?;
     println!("ACTUAL_BACKEND={}", actual.as_str());
     Ok(())
 }
@@ -737,7 +743,6 @@ fn forced_fallback(
     evidence_path: &Path,
 ) -> Result<()> {
     let target = evidence_target()?;
-    let started = Instant::now();
     let mut policy = ExecutionPolicy::prefer(backend);
     if policy.next_backend() != Some(backend) {
         anyhow::bail!(
@@ -759,24 +764,26 @@ fn forced_fallback(
     let next = policy.observe(outcome)?;
     debug_assert!(next.is_cpu());
     let fallback = CpuFallback::new(ffmpeg, ffprobe);
-    let generated = fallback
+    let _generated = fallback
         .transcode_synthetic_input(input, output, 10)
         .context("CPU fallback failed after the forced hardware failure")?;
     let report = FfprobeReport::read(ffprobe, output)
         .context("CPU fallback output did not pass the VP9/Opus WebM ffprobe contract")?;
     let actual = policy.observe(AttemptOutcome::Succeeded)?;
     let output_bytes = fs::read(output).context("unable to read CPU fallback output")?;
-    let mut evidence = Evidence::new(SpikeId::Media, target);
-    record_backend_evidence(&mut evidence, backend, actual, policy.downgrade_code())?;
-    evidence.measure("content_sha256", content_sha256_bytes(&output_bytes))?;
-    evidence.measure("video_codec", report.video_codec)?;
-    evidence.measure("audio_codec", report.audio_codec)?;
-    evidence.measure("average_speed", generated.average_speed)?;
-    evidence.finish(
-        Verdict::Pass,
-        started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+    let proof = PhaseZeroProof::media_forced_fallback(
+        target,
+        backend.as_str().to_owned(),
+        MediaForcedFallbackProof {
+            requested_backend: backend.as_str().to_owned(),
+            cpu_restarts: 1,
+            session_quarantined: policy.downgrade_code().is_some() && actual.is_cpu(),
+            video_codec: report.video_codec.unwrap_or_default(),
+            audio_codec: report.audio_codec.unwrap_or_default(),
+            output_sha256: content_sha256_bytes(&output_bytes),
+        },
     );
-    write_finished_evidence(evidence_path, &evidence)?;
+    write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)?;
     println!("ACTUAL_BACKEND=cpu");
     println!("DOWNGRADE_OBSERVED=true");
     Ok(())
@@ -880,21 +887,6 @@ fn evidence_target_from_values(primary: Option<&str>, legacy: Option<&str>) -> R
     TargetId::new(target).context("OVAYRA_TARGET_ID is not a supported target")
 }
 
-fn record_backend_evidence(
-    evidence: &mut Evidence,
-    requested: Backend,
-    actual: Backend,
-    downgrade_code: Option<DowngradeCode>,
-) -> Result<()> {
-    evidence.measure("requested_backend", requested.as_str())?;
-    evidence.measure("actual_backend", actual.as_str())?;
-    evidence.measure(
-        "downgrade_code",
-        downgrade_code.map_or("none", DowngradeCode::as_str),
-    )?;
-    Ok(())
-}
-
 fn write_finished_evidence(path: &Path, evidence: &Evidence) -> Result<()> {
     let json = evidence.to_pretty_json()?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -910,36 +902,38 @@ fn cpu_fallback(
     evidence_path: &std::path::Path,
     target: TargetId,
 ) -> Result<()> {
-    let started = Instant::now();
     let fallback = CpuFallback::new(ffmpeg, ffprobe);
     let generated = fallback.generate_synthetic(output, seconds)?;
     let report = FfprobeReport::read(fallback.ffprobe_path(), output)?;
     let output_bytes = fs::read(output).context("unable to read generated output")?;
 
-    let mut evidence = Evidence::new(SpikeId::Media, target);
-    evidence.measure("media_duration_seconds", report.duration_seconds)?;
-    evidence.measure("output_bytes", output_bytes.len())?;
-    evidence.measure("average_speed", generated.average_speed)?;
-    evidence.measure("video_codec", report.video_codec)?;
-    evidence.measure("audio_codec", report.audio_codec)?;
-    evidence.measure("pixel_format", report.video_pixel_format)?;
-    evidence.measure("ffmpeg_build_id", generated.ffmpeg_build_id)?;
-    evidence.measure("content_sha256", content_sha256_bytes(&output_bytes))?;
-    evidence.finish(
-        Verdict::Pass,
-        started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+    let proof = PhaseZeroProof::media_cpu(
+        target,
+        MediaCpuProof {
+            actual_backend: "cpu".to_owned(),
+            output_duration_seconds: rounded_duration_seconds(report.duration_seconds)?,
+            video_codec: report.video_codec.unwrap_or_default(),
+            audio_codec: report.audio_codec.unwrap_or_default(),
+            progress_complete: generated.average_speed.is_some_and(f64::is_finite),
+            output_sha256: content_sha256_bytes(&output_bytes),
+        },
     );
-
-    let json = evidence.to_pretty_json()?;
-    let parent = evidence_path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).context("unable to create evidence directory")?;
-    write_evidence_atomic(evidence_path, &json).context("unable to write evidence")?;
+    write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)
+        .context("unable to write evidence")?;
     println!("CPU_FALLBACK=PASS codec=vp9 audio=opus");
     Ok(())
 }
 
 fn write_evidence_atomic(destination: &Path, json: &str) -> std::io::Result<()> {
     write_atomic(destination, json)
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn rounded_duration_seconds(value: f64) -> Result<u64> {
+    if !value.is_finite() || value < 0.0 {
+        anyhow::bail!("ffprobe reported invalid duration")
+    }
+    Ok(value.ceil() as u64)
 }
 
 #[cfg(test)]
