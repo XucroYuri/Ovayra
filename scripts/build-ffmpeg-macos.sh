@@ -13,12 +13,12 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$source_root" && -n "$dependency_prefix" && -n "$stage_root" && -n "$parallelism" ]]
 target_triple=macos-arm64-vt
-[[ -n "${SOURCE_DATE_EPOCH:-}" ]] || { echo 'SOURCE_DATE_EPOCH must be set from FFmpeg n8.1.2' >&2; exit 64; }
+[[ "${SOURCE_DATE_EPOCH:-}" == 1781663615 ]] || { echo 'SOURCE_DATE_EPOCH must equal locked FFmpeg n8.1.2 value' >&2; exit 64; }
 marker="$stage_root/.ovayra-target"
 if [[ -e "$stage_root" && (! -f "$marker" || "$(<"$marker")" != "$target_triple") ]]; then echo "refusing cross-target stage overwrite" >&2; exit 65; fi
 mkdir -p "$stage_root" "$stage_root/provenance" "$stage_root/LICENSES" "$stage_root/sbom"
-printf '%s\n' "$target_triple" > "$marker"
 export SOURCE_DATE_EPOCH CFLAGS="${CFLAGS:-} -fdebug-prefix-map=$source_root=/usr/src/ovayra" LDFLAGS="${LDFLAGS:-}"
+diff -ruN "$source_root/ffmpeg.pristine" "$source_root/ffmpeg" > "$stage_root/provenance/changes.diff" || [[ $? -eq 1 ]]
 cd "$source_root/libvpx"; ./configure --prefix="$dependency_prefix" --disable-examples --disable-tools --enable-vp9-highbitdepth; make -j"$parallelism"; make test; make install
 cd "$source_root/opus"; ./configure --prefix="$dependency_prefix" --disable-doc; make -j"$parallelism"; make check; make install
 cd "$source_root/ffmpeg"
@@ -28,10 +28,10 @@ PKG_CONFIG_PATH="$dependency_prefix/lib/pkgconfig" ./configure "${configure[@]}"
 fate_targets=$(make fate-list | grep -E '^fate-(lavf-matroska|vp9|opus)' | head -n 3 || true); [[ -n "$fate_targets" ]] || { echo 'required FATE smoke targets unavailable' >&2; exit 66; }; set -- $fate_targets; make "$@"; make install
 cp "$source_root/ffmpeg-8.1.2.tar.xz" "$source_root/ffmpeg-8.1.2.tar.xz.asc" "$stage_root/provenance/"
 cp "$source_root/libvpx-source.tar.zst" "$source_root/opus-source.tar.zst" "$stage_root/provenance/"
-diff -ruN "$source_root/ffmpeg.pristine" "$source_root/ffmpeg" > "$stage_root/provenance/changes.diff" || [[ $? -eq 1 ]]
 cp "$source_root/ffmpeg/COPYING.LGPLv2.1" "$stage_root/LICENSES/FFmpeg-LGPL-2.1-or-later.txt"; cp "$source_root/libvpx/LICENSE" "$stage_root/LICENSES/libvpx-BSD-3-Clause.txt"; cp "$source_root/opus/COPYING" "$stage_root/LICENSES/Opus-BSD-3-Clause.txt"
 cp "$(dirname "$0")/../packaging/NOTICE.txt" "$stage_root/NOTICE.txt"
 cp "$(dirname "$0")/../packaging/ffmpeg.lock" "$stage_root/provenance/ffmpeg.lock"; cp "$source_root/ffmpeg-signature-attestation.json" "$stage_root/provenance/"
 ffmpeg_hash=$(shasum -a 256 "$stage_root/provenance/ffmpeg-8.1.2.tar.xz" | awk '{print $1}'); libvpx_hash=$(shasum -a 256 "$stage_root/provenance/libvpx-source.tar.zst" | awk '{print $1}'); opus_hash=$(shasum -a 256 "$stage_root/provenance/opus-source.tar.zst" | awk '{print $1}')
 printf '{"bomFormat":"CycloneDX","specVersion":"1.5","components":[{"name":"FFmpeg","version":"8.1.2","hashes":[{"alg":"SHA-256","content":"%s"}],"licenses":[{"license":{"id":"LGPL-2.1-or-later"}}]},{"name":"libvpx","version":"1.16.0","hashes":[{"alg":"SHA-256","content":"%s"}],"licenses":[{"license":{"id":"BSD-3-Clause"}}]},{"name":"opus","version":"1.6.1","hashes":[{"alg":"SHA-256","content":"%s"}],"licenses":[{"license":{"id":"BSD-3-Clause"}}]}]}' "$ffmpeg_hash" "$libvpx_hash" "$opus_hash" > "$stage_root/sbom/ffmpeg.cdx.json"
-(cd "$stage_root" && find bin provenance LICENSES NOTICE.txt sbom -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 shasum -a 256 > provenance/SHA256SUMS)
+printf '%s\n' "$target_triple" > "$marker"
+(cd "$stage_root" && find . -type f ! -path './provenance/SHA256SUMS' -print | LC_ALL=C sort | while IFS= read -r file; do shasum -a 256 "$file"; done | sed 's#  \./#  #' > provenance/SHA256SUMS)

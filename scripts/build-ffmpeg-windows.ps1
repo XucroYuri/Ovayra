@@ -7,16 +7,26 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if ([string]::IsNullOrWhiteSpace($env:SOURCE_DATE_EPOCH)) { throw 'SOURCE_DATE_EPOCH must be set from FFmpeg n8.1.2' }
-$vsDevCmd = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat'
-if (!(Test-Path -LiteralPath $vsDevCmd)) { throw "MSVC developer environment missing: $vsDevCmd" }
-cmd.exe /c "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && set" | ForEach-Object {
+$expectedEpoch = '1781663615'
+if ($env:SOURCE_DATE_EPOCH.Trim() -ne $expectedEpoch) { throw "SOURCE_DATE_EPOCH must equal locked value $expectedEpoch" }
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+if (!(Test-Path -LiteralPath $vswhere)) { throw "vswhere missing: $vswhere" }
+$installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+if ([string]::IsNullOrWhiteSpace($installation)) { throw 'Visual Studio MSVC x64 tools are missing' }
+$vsDevCmd = Join-Path $installation 'Common7\Tools\VsDevCmd.bat'
+if (!(Test-Path -LiteralPath $vsDevCmd)) { throw "VsDevCmd missing: $vsDevCmd" }
+cmd.exe /d /s /c "`"$vsDevCmd`" -no_logo -arch=x64 -host_arch=x64 && set" | ForEach-Object {
   if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "Env:$($Matches[1])" -Value $Matches[2] }
+}
+foreach ($tool in 'cl.exe', 'link.exe', 'lib.exe') {
+  if (!(Get-Command $tool -ErrorAction SilentlyContinue)) { throw "MSVC tool unavailable after VsDevCmd: $tool" }
 }
 $bash = 'C:\msys64\usr\bin\bash.exe'
 if (!(Test-Path -LiteralPath $bash)) { throw "MSYS2 bash missing: $bash" }
-foreach ($value in @($SourceRoot, $DependencyPrefix, $StageRoot)) { if ($value.Contains("'")) { throw 'single quote in build path is unsupported' } }
+foreach ($value in @($SourceRoot, $DependencyPrefix, $StageRoot)) {
+  if ([string]::IsNullOrWhiteSpace($value) -or $value.Contains("`n") -or $value.Contains("`r")) { throw 'build paths must be nonempty and newline-free' }
+}
 $script = Join-Path $PSScriptRoot 'build-ffmpeg-windows-msys.sh'
-$command = "'$(($script -replace '\\', '/'))' --source-root '$(($SourceRoot -replace '\\', '/'))' --dependency-prefix '$(($DependencyPrefix -replace '\\', '/'))' --stage-root '$(($StageRoot -replace '\\', '/'))' --parallelism '$Parallelism'"
-& $bash -lc $command
-if ($LASTEXITCODE -ne 0) { throw "MSYS2 FFmpeg build failed with exit code $LASTEXITCODE" }
+$env:CC = 'cl'; $env:CXX = 'cl'; $env:AR = 'lib'; $env:LD = 'link'
+& $bash --noprofile --norc $script --source-root $SourceRoot --dependency-prefix $DependencyPrefix --stage-root $StageRoot --parallelism $Parallelism
+if ($LASTEXITCODE -ne 0) { throw "MSYS2/MSVC FFmpeg build failed with exit code $LASTEXITCODE" }

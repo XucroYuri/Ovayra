@@ -1326,6 +1326,11 @@ cleanup are covered by process-group integration tests.
 - Create: `scripts/build-ffmpeg-windows-msys.sh`
 - Create: `scripts/check-ffmpeg-capabilities.sh`
 - Create: `scripts/compare-ffmpeg-reproducibility.sh`
+- Create: `scripts/verify-ffmpeg-signature.sh`
+- Create: `scripts/test-verify-ffmpeg-signature.sh`
+- Create: `scripts/test-check-ffmpeg-capabilities.sh`
+- Create: `scripts/test-ffmpeg-build-structure.sh`
+- Modify: `Cargo.toml`, `Cargo.lock`, `crates/spike-release/Cargo.toml` (exact-pinned `xz2` and `tar` for archive inspection)
 
 - [ ] **Step 1: Write failing policy tests before writing build automation**
 
@@ -1417,6 +1422,13 @@ Platform additions are:
 The two POSIX scripts use `set -euo pipefail`, accept source root, dependency prefix, stage root, and parallelism as named arguments, and never install into a system prefix. The PowerShell script uses `$ErrorActionPreference = 'Stop'` and the same logical arguments. Each script writes its fully expanded configure invocation to `provenance/buildconf.txt`, runs the upstream test targets for libvpx and Opus, then runs FFmpeg's `fate` smoke subset before staging. The scripts fail if their stage root exists but was not created for the current target triple, preventing cross-target overwrite.
 
 The job fails if any desired component is absent from `-hwaccels`, `-decoders`, `-encoders`, or `-filters`. It also runs the CPU VP9/Opus test from Task 4. Build dependencies and their source/license material are copied into the provenance folder.
+
+**Implementation evidence boundary (2026-07-17):** policy tests, signature-status
+parser fixtures, capability fixtures, and build-chain structural assertions are
+runnable locally. Local GPG verification, PowerShell parsing/execution, and native
+FFmpeg double builds were not run here; this plan makes no claim that a native
+bundle, capability inventory, CPU smoke result, or reproducible binary has passed.
+CI native runners enforce those acceptance steps.
 
 - [ ] **Step 5: Implement bundle-policy validation**
 

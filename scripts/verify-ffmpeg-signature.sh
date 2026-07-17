@@ -2,6 +2,9 @@
 # Verify an FFmpeg release signature using only the supplied pinned key artifact.
 set -euo pipefail
 
+# setup-msys2 installs native tools below this prefix; include it when invoked by pwsh.
+[[ -d /ucrt64/bin ]] && PATH="/ucrt64/bin:$PATH"
+
 die() { printf '%s\n' "verify-ffmpeg-signature: $*" >&2; exit 65; }
 
 parse_status() {
