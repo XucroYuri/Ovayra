@@ -2,7 +2,7 @@ use std::{
     collections::BTreeSet,
     fmt::{self, Write as _},
     fs,
-    io::Read as _,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -292,29 +292,48 @@ fn lint_file(root: &Path, canonical_root: &Path, file: &Path, text_mode: bool) -
         return Err(LintError::new(&relative, Category::ChangedEntry).into());
     }
     let mut opened = fs::File::open(file).map_err(|_| LintError::new(&relative, Category::Io))?;
-    let metadata = opened
+    let opened_before = opened
         .metadata()
         .map_err(|_| LintError::new(&relative, Category::Io))?;
     let after = fs::symlink_metadata(file).map_err(|_| LintError::new(&relative, Category::Io))?;
     let canonical_file =
         fs::canonicalize(file).map_err(|_| LintError::new(&relative, Category::Io))?;
     if after.file_type().is_symlink()
-        || !same_identity(&before, &metadata)
-        || !same_identity(&metadata, &after)
+        || !same_identity(&before, &opened_before)
+        || !same_identity(&opened_before, &after)
         || !canonical_file.starts_with(canonical_root)
     {
         return Err(LintError::new(&relative, Category::ChangedEntry).into());
     }
-    if metadata.len() > MAX_FILE_BYTES {
-        return Err(LintError::new(relative, Category::Oversized).into());
-    }
     if !text_mode && file.extension().and_then(|extension| extension.to_str()) != Some("json") {
         return Err(LintError::new(relative, Category::UnsupportedFile).into());
     }
-    let mut bytes = Vec::with_capacity(metadata.len().try_into().unwrap_or(0));
-    opened
-        .read_to_end(&mut bytes)
+    let bytes = read_bounded(&mut opened).map_err(|error| {
+        LintError::new(
+            &relative,
+            if error.kind() == std::io::ErrorKind::FileTooLarge {
+                Category::Oversized
+            } else {
+                Category::Io
+            },
+        )
+    })?;
+    let opened_after = opened
+        .metadata()
         .map_err(|_| LintError::new(&relative, Category::Io))?;
+    let path_after =
+        fs::symlink_metadata(file).map_err(|_| LintError::new(&relative, Category::Io))?;
+    let canonical_after =
+        fs::canonicalize(file).map_err(|_| LintError::new(&relative, Category::Io))?;
+    if path_after.file_type().is_symlink()
+        || !path_after.is_file()
+        || !same_identity(&before, &opened_after)
+        || !same_identity(&opened_after, &path_after)
+        || opened_after.len() != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+        || !canonical_after.starts_with(canonical_root)
+    {
+        return Err(LintError::new(&relative, Category::ChangedEntry).into());
+    }
     if bytes.contains(&0) {
         return Err(LintError::new(relative, Category::BinaryOrInvalidText).into());
     }
@@ -322,12 +341,25 @@ fn lint_file(root: &Path, canonical_root: &Path, file: &Path, text_mode: bool) -
         .map_err(|_| LintError::new(&relative, Category::BinaryOrInvalidText))?;
     if text_mode {
         scan_text(contents).map_err(|category| LintError::new(relative, category))?;
-        return Ok(metadata.len());
+        return Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
     }
     parse_and_scan_json(contents).map_err(|category| LintError::new(&relative, category))?;
     Evidence::from_json(contents)
         .map_err(|_| LintError::new(relative, Category::InvalidEvidence))?;
-    Ok(metadata.len())
+    Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+}
+
+fn read_bounded<R: Read>(mut reader: R) -> std::io::Result<Vec<u8>> {
+    let capacity = usize::try_from(MAX_FILE_BYTES + 1).expect("Phase 0 lint cap fits usize");
+    let mut bytes = Vec::with_capacity(capacity);
+    reader
+        .by_ref()
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > usize::try_from(MAX_FILE_BYTES).expect("Phase 0 lint cap fits usize") {
+        return Err(std::io::Error::from(std::io::ErrorKind::FileTooLarge));
+    }
+    Ok(bytes)
 }
 
 fn entry_id(relative: &Path) -> String {
@@ -583,4 +615,17 @@ fn scan_urls(value: &str) -> std::result::Result<(), Category> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::{MAX_FILE_BYTES, read_bounded};
+
+    #[test]
+    fn bounded_reader_rejects_one_byte_over_the_cap_without_unbounded_allocation() {
+        let input = vec![b'x'; usize::try_from(MAX_FILE_BYTES + 1).unwrap()];
+        assert!(read_bounded(Cursor::new(input)).is_err());
+    }
 }

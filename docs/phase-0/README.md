@@ -21,7 +21,7 @@ Required records must finish with `pass`. `conditional` and `skipped` are not va
 | `linux-x64-vaapi-x11` | glibc X11 user session; VAAPI | SSH/headless and non-X11 sessions |
 | `linux-x64-nvidia` | glibc desktop with supported NVIDIA GPU; NVDEC/NVENC | non-NVIDIA Linux hardware |
 
-The evidence linter follows only bounded regular files and rejects symlinks, malformed or duplicate-key JSON, unsafe nested key names, credentials, upload endpoints, home paths, and URLs with credentials. It emits only a relative file name and category. It accepts an empty evidence directory; a missing directory fails closed.
+The evidence linter follows only bounded regular files and rejects symlinks, malformed or duplicate-key JSON, unsafe nested key names, credentials, upload endpoints, home paths, and URLs with credentials. It emits only an opaque deterministic entry hash and category, never a raw path or filename. It accepts an empty evidence directory; a missing directory fails closed.
 
 Run the local equivalent before review:
 
