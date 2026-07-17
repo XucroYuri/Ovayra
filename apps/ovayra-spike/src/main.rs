@@ -45,7 +45,14 @@ fn main() -> Result<()> {
                     output,
                     evidence,
                 },
-        } => cpu_fallback(ffmpeg, ffprobe, seconds, &output, &evidence)?,
+        } => cpu_fallback(
+            ffmpeg,
+            ffprobe,
+            seconds,
+            &output,
+            &evidence,
+            evidence_target()?,
+        )?,
         Command::Media {
             command: MediaCommand::Inventory { ffmpeg, evidence },
         } => inventory(ffmpeg, &evidence)?,
@@ -322,11 +329,8 @@ fn cpu_fallback(
     seconds: u64,
     output: &std::path::Path,
     evidence_path: &std::path::Path,
+    target: TargetId,
 ) -> Result<()> {
-    let target = env::var("OVAYRA_EVIDENCE_TARGET")
-        .context("OVAYRA_EVIDENCE_TARGET must name a supported Phase 0 target")?;
-    let target =
-        TargetId::new(target).context("OVAYRA_EVIDENCE_TARGET is not a supported target")?;
     let started = Instant::now();
     let fallback = CpuFallback::new(ffmpeg, ffprobe);
     let generated = fallback.generate_synthetic(output, seconds)?;
@@ -388,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn evidence_target_prefers_the_task_twelve_environment_name() {
+    fn cpu_fallback_and_preview_handoffs_prefer_the_task_twelve_environment_name() {
         let target =
             evidence_target_from_values(Some("macos-arm64-vt"), Some("linux-x64-nvidia")).unwrap();
         assert_eq!(target.as_str(), "macos-arm64-vt");

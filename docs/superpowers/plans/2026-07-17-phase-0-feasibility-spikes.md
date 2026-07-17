@@ -974,7 +974,7 @@ Expected: deterministic tests and the command contract compile. The pinned-bundl
 - [ ] **Step 7: Commit**
 
 ```bash
-git add apps/ovayra-spike crates/spike-media
+git add Cargo.toml Cargo.lock apps/ovayra-spike crates/spike-media crates/spike-ui-generated
 git commit -m "feat: prove slint preview frame bridge"
 ```
 
