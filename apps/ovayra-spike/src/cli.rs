@@ -30,6 +30,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: MediaCommand,
     },
+    Gemini {
+        #[command(subcommand)]
+        command: GeminiCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -88,6 +92,32 @@ pub(crate) enum MediaCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum GeminiCommand {
+    /// Start a resumable upload, stage exactly one chunk, and persist an encrypted checkpoint.
+    StageUpload {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        checkpoint: PathBuf,
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=1))]
+        pause_after_chunks: u8,
+        #[arg(long)]
+        evidence: PathBuf,
+    },
+    /// Resume an encrypted checkpoint in a separate process, analyze, delete remotely, and clean up.
+    ResumeAnalyze {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        checkpoint: PathBuf,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        evidence: PathBuf,
+    },
+}
+
 fn parse_hardware_backend(input: &str) -> Result<Backend, String> {
     let backend = input.parse::<Backend>().map_err(str::to_owned)?;
     if backend.is_cpu() {
@@ -102,7 +132,67 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Cli, Command, MediaCommand};
+    use super::{Cli, Command, GeminiCommand, MediaCommand};
+
+    #[test]
+    fn gemini_commands_require_a_real_two_process_checkpoint_contract() {
+        let stage = Cli::try_parse_from([
+            "ovayra-spike",
+            "gemini",
+            "stage-upload",
+            "--input",
+            "fallback.webm",
+            "--checkpoint",
+            "checkpoint.json",
+            "--pause-after-chunks",
+            "1",
+            "--evidence",
+            "stage.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            stage.command,
+            Command::Gemini {
+                command: GeminiCommand::StageUpload { .. }
+            }
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "ovayra-spike",
+                "gemini",
+                "stage-upload",
+                "--input",
+                "fallback.webm",
+                "--checkpoint",
+                "checkpoint.json",
+                "--pause-after-chunks",
+                "2",
+                "--evidence",
+                "stage.json",
+            ])
+            .is_err()
+        );
+        let resume = Cli::try_parse_from([
+            "ovayra-spike",
+            "gemini",
+            "resume-analyze",
+            "--input",
+            "fallback.webm",
+            "--checkpoint",
+            "checkpoint.json",
+            "--model",
+            "gemini-3.1-flash-lite",
+            "--evidence",
+            "resume.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            resume.command,
+            Command::Gemini {
+                command: GeminiCommand::ResumeAnalyze { .. }
+            }
+        ));
+    }
 
     #[test]
     fn preview_uses_the_measurement_contract_defaults() {

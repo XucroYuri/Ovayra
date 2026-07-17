@@ -13,6 +13,7 @@ icns.workspace = true
 ico.workspace = true
 png.workspace = true
 resvg.workspace = true
+serde_json.workspace = true
 slint.workspace = true
 sysinfo.workspace = true
 spike-contracts = { path = "../../crates/spike-contracts" }

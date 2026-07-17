@@ -14,8 +14,10 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 url.workspace = true
+spike-platform = { path = "../spike-platform" }
 
 [dev-dependencies]
+spike-platform = { path = "../spike-platform" }
 wiremock.workspace = true
 
 [lints]

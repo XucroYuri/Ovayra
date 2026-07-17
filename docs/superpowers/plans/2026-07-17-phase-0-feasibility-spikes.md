@@ -988,8 +988,14 @@ git commit -m "feat: prove slint preview frame bridge"
 - Create: `crates/spike-gemini/src/client.rs`
 - Modify: `crates/spike-gemini/src/lib.rs`
 - Create: `crates/spike-gemini/tests/resumable_contract.rs`
+- Create: `crates/spike-platform/src/keyring_store.rs`
+- Create: `crates/spike-platform/src/envelope.rs`
+- Modify: `crates/spike-platform/src/lib.rs`
+- Create: `crates/spike-platform/tests/envelope.rs`
 - Modify: `apps/ovayra-spike/src/cli.rs`
 - Modify: `apps/ovayra-spike/src/main.rs`
+- Modify: `apps/ovayra-spike/Cargo.toml`
+- Modify: `Cargo.lock`
 
 - [ ] **Step 1: Write failing request/response contract tests**
 
@@ -1108,48 +1114,43 @@ Expected: `UPLOAD_RESUMED=true`, `REMOTE_STATE=ACTIVE`, `ANALYSIS_NONEMPTY=true`
 - [ ] **Step 7: Commit without live evidence containing service identifiers**
 
 ```bash
-git add crates/spike-gemini apps/ovayra-spike
+git add Cargo.lock crates/spike-gemini crates/spike-platform apps/ovayra-spike \
+  docs/superpowers/plans/2026-07-17-phase-0-feasibility-spikes.md
 git commit -m "feat: prove gemini resumable upload contract"
 ```
 
 ---
 
-### Task 8: Prove OS Keyring and Encrypted Upload Checkpoints
+### Task 8: Prove Native OS Keyring Use and Deepen Encrypted Checkpoint Gates
+
+**Task 7 prerequisite:** Task 7 establishes the production `SecretStore`, `OsSecretStore`,
+`MemorySecretStore`, AES-256-GCM envelope implementation, deterministic round-trip/tamper tests,
+and the Gemini encrypted-checkpoint consumer. Task 8 must not recreate or weaken that boundary.
 
 **Files:**
-- Create: `crates/spike-platform/src/keyring_store.rs`
-- Create: `crates/spike-platform/src/envelope.rs`
+- Modify: `crates/spike-platform/src/keyring_store.rs`
+- Modify: `crates/spike-platform/src/envelope.rs`
 - Modify: `crates/spike-platform/src/lib.rs`
-- Create: `crates/spike-platform/tests/envelope.rs`
+- Modify: `crates/spike-platform/tests/envelope.rs`
 - Modify: `apps/ovayra-spike/src/cli.rs`
+- Modify: `apps/ovayra-spike/src/main.rs`
 
-- [ ] **Step 1: Write failing in-memory envelope tests**
+- [ ] **Step 1: Extend the existing deterministic envelope tests with boundary gates**
 
 ```rust
 use spike_platform::{EncryptedRecord, EnvelopeCipher, MemorySecretStore, SecretStore};
 
 #[test]
-fn checkpoint_round_trip_never_serializes_plaintext() {
+fn rejects_wrong_associated_data_and_oversized_records() {
     let store = MemorySecretStore::default();
     let cipher = EnvelopeCipher::load_or_create(&store, "test-installation").unwrap();
-    let plaintext = b"https://upload.invalid/session/sensitive";
-    let record = cipher.seal(plaintext, b"ovayra-upload-session-v1").unwrap();
-    let json = serde_json::to_vec(&record).unwrap();
-    assert!(!json.windows(plaintext.len()).any(|window| window == plaintext));
-    assert_eq!(cipher.open(&record, b"ovayra-upload-session-v1").unwrap(), plaintext);
-}
-
-#[test]
-fn tampering_is_rejected() {
-    let store = MemorySecretStore::default();
-    let cipher = EnvelopeCipher::load_or_create(&store, "test-installation").unwrap();
-    let mut record = cipher.seal(b"secret", b"context").unwrap();
-    record.ciphertext[0] ^= 1;
-    assert!(cipher.open(&record, b"context").is_err());
+    let record = cipher.seal(b"secret", b"context").unwrap();
+    assert!(cipher.open(&record, b"different-context").is_err());
+    assert!(cipher.seal(&vec![0; 16 * 1024], b"context").is_err());
 }
 ```
 
-- [ ] **Step 2: Define the secret-store boundary**
+- [ ] **Step 2: Audit and harden the secret-store boundary already used by Task 7**
 
 ```rust
 pub trait SecretStore {
@@ -1159,11 +1160,18 @@ pub trait SecretStore {
 }
 ```
 
-`OsSecretStore` uses `keyring::v1::Entry::new(service, account)`, `set_secret`, `get_secret`, and `delete_credential`. Map a missing credential to `Ok(None)` and `NoDefaultStore`/locked/unavailable errors to explicit variants; never silently fall back to a plaintext file.
+`OsSecretStore` already uses `keyring::v1::Entry::new(service, account)`, `set_secret`,
+`get_secret`, and `delete_credential`. Add targeted tests/review coverage for missing-credential
+mapping and explicit `NoDefaultStore`/locked/unavailable categories; never add a plaintext-file
+fallback.
 
-- [ ] **Step 3: Implement AES-256-GCM envelope records**
+- [ ] **Step 3: Validate and deepen the AES-256-GCM envelope gates**
 
-The master key is 32 random bytes generated through `aes_gcm::aead::Generate`, stored as service `com.ovayra.desktop` and account `installation-master-key-v1`. Each record uses a newly generated 96-bit nonce and associated data `ovayra-upload-session-v1`.
+The Task 7 master-key and envelope implementation must be retained: 32 random bytes generated
+through `aes_gcm::aead::Generate`, stored by the native store under service
+`com.ovayra.desktop`; each record has a fresh 96-bit nonce and the Gemini checkpoint uses
+associated data `ovayra-upload-session-v1`. Task 8 adds negative gates for wrong associated
+data, malformed version/nonce, maximum record size, and key-length rejection.
 
 ```rust
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1176,7 +1184,7 @@ pub struct EncryptedRecord {
 
 Reject versions other than `1`, nonce lengths other than 12 bytes, keys other than 32 bytes, authentication failure, and ciphertext larger than 16 KiB. Key material uses `zeroize` on drop; the platform crate consumes the workspace's exact `zeroize = "=1.9.0"` pin.
 
-- [ ] **Step 4: Run deterministic tests**
+- [ ] **Step 4: Run the expanded deterministic tests**
 
 ```bash
 cargo test -p spike-platform --test envelope
