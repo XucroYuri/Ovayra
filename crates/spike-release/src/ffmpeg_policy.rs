@@ -24,6 +24,8 @@ const REQUIRED_ARTIFACTS: &[&str] = &[
     "provenance/opus-source.tar.zst",
     "provenance/buildconf.txt",
     "provenance/changes.diff",
+    "provenance/ffmpeg.lock",
+    "provenance/ffmpeg-signature-attestation.json",
     "LICENSES/FFmpeg-LGPL-2.1-or-later.txt",
     "LICENSES/libvpx-BSD-3-Clause.txt",
     "LICENSES/Opus-BSD-3-Clause.txt",
@@ -82,15 +84,17 @@ impl FfmpegBundle {
     /// bundle material.
     pub fn validate_layout(root: &Path) -> Result<(), FfmpegPolicyError> {
         let root = canonical_directory(root)?;
-        for artifact in REQUIRED_ARTIFACTS {
+        let artifacts = required_artifacts(&root)?;
+        for artifact in &artifacts {
             let path = root.join(artifact);
             require_regular(&root, &path, artifact)?;
         }
-        validate_no_symlink_or_unlisted_files(&root)?;
-        validate_checksums(&root)?;
+        validate_no_symlink_or_unlisted_files(&root, &artifacts)?;
+        validate_checksums(&root, &artifacts)?;
+        validate_locked_source(&root)?;
         let buildconf = fs::read_to_string(root.join("provenance/buildconf.txt"))?;
         Self::validate_buildconf(&buildconf)?;
-        validate_sbom(&root.join("sbom/ffmpeg.cdx.json"))
+        validate_sbom(&root)
     }
 
     /// Runs only verified in-root executables with a bounded wall-clock deadline.
@@ -106,9 +110,8 @@ impl FfmpegBundle {
             let executable = executable_path(&root, program)?;
             let output = run_checked(&executable, "-version")?;
             let stdout = String::from_utf8_lossy(&output);
-            if !stdout.contains(&format!("ffmpeg version {FFMPEG_VERSION}"))
-                && !stdout.contains(&format!("ffprobe version {FFMPEG_VERSION}"))
-            {
+            let expected = format!("{program} version {FFMPEG_VERSION}");
+            if stdout.lines().next().map(str::trim_start) != Some(expected.as_str()) {
                 return Err(FfmpegPolicyError::ExecutableCheck(format!(
                     "{program} did not report exact source version {FFMPEG_VERSION}"
                 )));
@@ -162,6 +165,51 @@ impl FfmpegBundle {
     }
 }
 
+#[derive(Deserialize)]
+struct LockFile {
+    ffmpeg: LockedFfmpeg,
+}
+#[derive(Deserialize)]
+struct LockedFfmpeg {
+    version: String,
+    sha256: String,
+    release_key_fingerprint: String,
+}
+#[derive(Deserialize)]
+struct SignatureAttestation {
+    verified: bool,
+    fingerprint: String,
+    sha256: String,
+}
+
+fn validate_locked_source(root: &Path) -> Result<(), FfmpegPolicyError> {
+    let lock: LockFile = toml::from_str(&fs::read_to_string(root.join("provenance/ffmpeg.lock"))?)
+        .map_err(|error| {
+            FfmpegPolicyError::InvalidBuildconf(format!("invalid source lock: {error}"))
+        })?;
+    let actual = sha256_file(&root.join("provenance/ffmpeg-8.1.2.tar.xz"))?;
+    if lock.ffmpeg.version != FFMPEG_VERSION || lock.ffmpeg.sha256 != actual {
+        return Err(FfmpegPolicyError::ChecksumMismatch(
+            "provenance/ffmpeg-8.1.2.tar.xz".into(),
+        ));
+    }
+    let attestation: SignatureAttestation = serde_json::from_slice(&fs::read(
+        root.join("provenance/ffmpeg-signature-attestation.json"),
+    )?)
+    .map_err(|error| {
+        FfmpegPolicyError::InvalidBuildconf(format!("invalid signature attestation: {error}"))
+    })?;
+    if !attestation.verified
+        || attestation.fingerprint != lock.ffmpeg.release_key_fingerprint
+        || attestation.sha256 != actual
+    {
+        return Err(FfmpegPolicyError::InvalidBuildconf(
+            "signature attestation does not match lock".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn canonical_directory(root: &Path) -> Result<PathBuf, FfmpegPolicyError> {
     let canonical = fs::canonicalize(root)
         .map_err(|_| FfmpegPolicyError::MissingArtifact(root.display().to_string()))?;
@@ -184,7 +232,44 @@ fn require_regular(root: &Path, path: &Path, label: &str) -> Result<(), FfmpegPo
     Ok(())
 }
 
-fn validate_no_symlink_or_unlisted_files(root: &Path) -> Result<(), FfmpegPolicyError> {
+fn required_artifacts(root: &Path) -> Result<Vec<String>, FfmpegPolicyError> {
+    let mut artifacts = REQUIRED_ARTIFACTS
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
+    let marker = root.join(".ovayra-target");
+    if marker.exists() {
+        let target = fs::read_to_string(&marker)?;
+        if target.trim().starts_with("x86_64-pc-windows-")
+            || target.trim().starts_with("x86_64-unknown-linux-")
+        {
+            artifacts.extend(
+                [
+                    "provenance/nv-codec-headers-source.tar.zst",
+                    "LICENSES/nv-codec-headers-MIT.txt",
+                ]
+                .into_iter()
+                .map(str::to_owned),
+            );
+        }
+        if target.trim().starts_with("x86_64-pc-windows-") {
+            for program in ["ffmpeg", "ffprobe"] {
+                let regular = format!("bin/{program}");
+                let position = artifacts
+                    .iter()
+                    .position(|artifact| artifact == &regular)
+                    .expect("fixed required artifact exists");
+                artifacts[position] = format!("bin/{program}.exe");
+            }
+        }
+    }
+    Ok(artifacts)
+}
+
+fn validate_no_symlink_or_unlisted_files(
+    root: &Path,
+    required: &[String],
+) -> Result<(), FfmpegPolicyError> {
     let mut stack = vec![root.to_owned()];
     let mut files = BTreeSet::new();
     while let Some(directory) = stack.pop() {
@@ -211,7 +296,7 @@ fn validate_no_symlink_or_unlisted_files(root: &Path) -> Result<(), FfmpegPolicy
     }
     let manifest = "provenance/SHA256SUMS";
     for file in files.iter().filter(|file| file.as_str() != manifest) {
-        if !REQUIRED_ARTIFACTS.contains(&file.as_str()) {
+        if !required.iter().any(|artifact| artifact == file) {
             return Err(FfmpegPolicyError::InvalidChecksumManifest(format!(
                 "unlisted regular file {file}"
             )));
@@ -220,7 +305,7 @@ fn validate_no_symlink_or_unlisted_files(root: &Path) -> Result<(), FfmpegPolicy
     Ok(())
 }
 
-fn validate_checksums(root: &Path) -> Result<(), FfmpegPolicyError> {
+fn validate_checksums(root: &Path, required: &[String]) -> Result<(), FfmpegPolicyError> {
     let manifest = fs::read_to_string(root.join("provenance/SHA256SUMS"))?;
     let mut sums = BTreeMap::new();
     for line in manifest.lines() {
@@ -246,16 +331,16 @@ fn validate_checksums(root: &Path) -> Result<(), FfmpegPolicyError> {
             return Err(FfmpegPolicyError::InvalidChecksumManifest(relative.into()));
         }
     }
-    for required in REQUIRED_ARTIFACTS
+    for required in required
         .iter()
-        .filter(|path| **path != "provenance/SHA256SUMS")
+        .filter(|path| path.as_str() != "provenance/SHA256SUMS")
     {
-        let expected = sums.remove(*required).ok_or_else(|| {
+        let expected = sums.remove(required.as_str()).ok_or_else(|| {
             FfmpegPolicyError::InvalidChecksumManifest(format!("missing {required}"))
         })?;
         let actual = sha256_file(&root.join(required))?;
         if actual != expected {
-            return Err(FfmpegPolicyError::ChecksumMismatch((*required).into()));
+            return Err(FfmpegPolicyError::ChecksumMismatch(required.clone()));
         }
     }
     if let Some((unexpected, _)) = sums.into_iter().next() {
@@ -337,24 +422,38 @@ struct License {
     id: Option<String>,
 }
 
-fn validate_sbom(path: &Path) -> Result<(), FfmpegPolicyError> {
-    let bom: Bom = serde_json::from_slice(&fs::read(path)?)
+fn validate_sbom(root: &Path) -> Result<(), FfmpegPolicyError> {
+    let bom: Bom = serde_json::from_slice(&fs::read(root.join("sbom/ffmpeg.cdx.json"))?)
         .map_err(|error| FfmpegPolicyError::InvalidSbom(error.to_string()))?;
-    for (name, version, license) in [
-        ("FFmpeg", FFMPEG_VERSION, "LGPL-2.1-or-later"),
-        ("libvpx", "1.16.0", "BSD-3-Clause"),
-        ("opus", "1.6.1", "BSD-3-Clause"),
+    for (name, version, license, archive) in [
+        (
+            "FFmpeg",
+            FFMPEG_VERSION,
+            "LGPL-2.1-or-later",
+            "provenance/ffmpeg-8.1.2.tar.xz",
+        ),
+        (
+            "libvpx",
+            "1.16.0",
+            "BSD-3-Clause",
+            "provenance/libvpx-source.tar.zst",
+        ),
+        (
+            "opus",
+            "1.6.1",
+            "BSD-3-Clause",
+            "provenance/opus-source.tar.zst",
+        ),
     ] {
         let component = bom
             .components
             .iter()
             .find(|component| component.name == name && component.version == version)
             .ok_or_else(|| FfmpegPolicyError::InvalidSbom(format!("missing {name}@{version}")))?;
+        let archive_hash = sha256_file(&root.join(archive))?;
         let hash_ok = component.hashes.as_ref().is_some_and(|hashes| {
             hashes.iter().any(|hash| {
-                hash.alg.eq_ignore_ascii_case("SHA-256")
-                    && hash.content.len() == 64
-                    && hash.content.bytes().all(|byte| byte.is_ascii_hexdigit())
+                hash.alg.eq_ignore_ascii_case("SHA-256") && hash.content == archive_hash
             })
         });
         let license_ok = component.licenses.as_ref().is_some_and(|licenses| {
@@ -376,7 +475,11 @@ fn validate_sbom(path: &Path) -> Result<(), FfmpegPolicyError> {
 }
 
 fn executable_path(root: &Path, program: &str) -> Result<PathBuf, FfmpegPolicyError> {
-    let file = if cfg!(windows) {
+    let file = if root.join(".ovayra-target").exists()
+        && fs::read_to_string(root.join(".ovayra-target"))?
+            .trim()
+            .starts_with("x86_64-pc-windows-")
+    {
         format!("{program}.exe")
     } else {
         program.into()

@@ -18,6 +18,12 @@ tag = "v1.6.1"
 peeled_commit = "22244de5a79bd1d6d623c32e72bf1954b56235be"
 source_url = "https://github.com/xiph/opus.git"
 
+[nv_codec_headers]
+tag = "n13.0.19.0"
+peeled_commit = "e844e5b26f46bb77479f063029595293aa8f812d"
+source_url = "https://github.com/FFmpeg/nv-codec-headers.git"
+license = "MIT"
+
 [[target]]
 id = "macos-arm64-vt"
 triple = "aarch64-apple-darwin"

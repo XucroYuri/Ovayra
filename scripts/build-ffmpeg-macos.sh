@@ -28,9 +28,10 @@ PKG_CONFIG_PATH="$dependency_prefix/lib/pkgconfig" ./configure "${configure[@]}"
 fate_targets=$(make fate-list | grep -E '^fate-(lavf-matroska|vp9|opus)' | head -n 3 || true); [[ -n "$fate_targets" ]] || { echo 'required FATE smoke targets unavailable' >&2; exit 66; }; set -- $fate_targets; make "$@"; make install
 cp "$source_root/ffmpeg-8.1.2.tar.xz" "$source_root/ffmpeg-8.1.2.tar.xz.asc" "$stage_root/provenance/"
 cp "$source_root/libvpx-source.tar.zst" "$source_root/opus-source.tar.zst" "$stage_root/provenance/"
-git -C "$source_root/ffmpeg" diff --no-ext-diff > "$stage_root/provenance/changes.diff"
+diff -ruN "$source_root/ffmpeg.pristine" "$source_root/ffmpeg" > "$stage_root/provenance/changes.diff" || [[ $? -eq 1 ]]
 cp "$source_root/ffmpeg/COPYING.LGPLv2.1" "$stage_root/LICENSES/FFmpeg-LGPL-2.1-or-later.txt"; cp "$source_root/libvpx/LICENSE" "$stage_root/LICENSES/libvpx-BSD-3-Clause.txt"; cp "$source_root/opus/COPYING" "$stage_root/LICENSES/Opus-BSD-3-Clause.txt"
 cp "$(dirname "$0")/../packaging/NOTICE.txt" "$stage_root/NOTICE.txt"
+cp "$(dirname "$0")/../packaging/ffmpeg.lock" "$stage_root/provenance/ffmpeg.lock"; cp "$source_root/ffmpeg-signature-attestation.json" "$stage_root/provenance/"
 ffmpeg_hash=$(shasum -a 256 "$stage_root/provenance/ffmpeg-8.1.2.tar.xz" | awk '{print $1}'); libvpx_hash=$(shasum -a 256 "$stage_root/provenance/libvpx-source.tar.zst" | awk '{print $1}'); opus_hash=$(shasum -a 256 "$stage_root/provenance/opus-source.tar.zst" | awk '{print $1}')
 printf '{"bomFormat":"CycloneDX","specVersion":"1.5","components":[{"name":"FFmpeg","version":"8.1.2","hashes":[{"alg":"SHA-256","content":"%s"}],"licenses":[{"license":{"id":"LGPL-2.1-or-later"}}]},{"name":"libvpx","version":"1.16.0","hashes":[{"alg":"SHA-256","content":"%s"}],"licenses":[{"license":{"id":"BSD-3-Clause"}}]},{"name":"opus","version":"1.6.1","hashes":[{"alg":"SHA-256","content":"%s"}],"licenses":[{"license":{"id":"BSD-3-Clause"}}]}]}' "$ffmpeg_hash" "$libvpx_hash" "$opus_hash" > "$stage_root/sbom/ffmpeg.cdx.json"
 (cd "$stage_root" && find bin provenance LICENSES NOTICE.txt sbom -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 shasum -a 256 > provenance/SHA256SUMS)

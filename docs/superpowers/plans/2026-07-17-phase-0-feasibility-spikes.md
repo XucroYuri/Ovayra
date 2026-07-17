@@ -1323,6 +1323,9 @@ cleanup are covered by process-group integration tests.
 - Create: `scripts/build-ffmpeg-macos.sh`
 - Create: `scripts/build-ffmpeg-linux.sh`
 - Create: `scripts/build-ffmpeg-windows.ps1`
+- Create: `scripts/build-ffmpeg-windows-msys.sh`
+- Create: `scripts/check-ffmpeg-capabilities.sh`
+- Create: `scripts/compare-ffmpeg-reproducibility.sh`
 
 - [ ] **Step 1: Write failing policy tests before writing build automation**
 
@@ -1380,6 +1383,7 @@ Expected: missing validation types cause compilation failure.
 - FFmpeg `8.1.2`, source `https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz`, detached signature URL, the verified tarball SHA-256, and the FFmpeg release-key fingerprint used for verification;
 - libvpx tag `v1.16.0`, peeled commit `1024874c5919305883187e2953de8fcb4c3d7fa6`;
 - Opus tag `v1.6.1`, peeled commit `22244de5a79bd1d6d623c32e72bf1954b56235be`;
+- nv-codec-headers tag `n13.0.19.0`, peeled commit `e844e5b26f46bb77479f063029595293aa8f812d`, with MIT notice and source archive when NVIDIA API support is enabled;
 - the native target triple and builder image/OS identity for each output.
 
 The workflow downloads sources from those canonical origins, verifies FFmpeg's detached signature, verifies Git tag/commit identity for libvpx and Opus, computes hashes, and then writes the exact resolved values into the lock file. Do not place an unresolved checksum or release-key token in the file.

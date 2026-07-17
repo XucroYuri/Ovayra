@@ -16,6 +16,8 @@ forbidden = ["--enable-gpl", "--enable-nonfree"]
 required = [
   "provenance/ffmpeg-8.1.2.tar.xz", "provenance/ffmpeg-8.1.2.tar.xz.asc",
   "provenance/libvpx-source.tar.zst", "provenance/opus-source.tar.zst",
+  "provenance/nv-codec-headers-source.tar.zst", "provenance/ffmpeg.lock",
+  "provenance/ffmpeg-signature-attestation.json",
   "provenance/buildconf.txt", "provenance/changes.diff", "provenance/SHA256SUMS",
   "LICENSES/FFmpeg-LGPL-2.1-or-later.txt", "LICENSES/libvpx-BSD-3-Clause.txt",
   "LICENSES/Opus-BSD-3-Clause.txt", "NOTICE.txt", "sbom/ffmpeg.cdx.json",
@@ -27,3 +29,4 @@ required = [
 # separate release checks; the build must still retain --disable-gpl and --disable-nonfree.
 allowed_targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 requires_notice = true
+license = "MIT"
