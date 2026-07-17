@@ -12,8 +12,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use spike_contracts::{Evidence, SpikeId, TargetId, Verdict};
 use spike_media::{
-    AttemptOutcome, Backend, CpuFallback, DowngradeCode, ExecutionPolicy, FfmpegError,
-    FfmpegRunner, FfprobeReport, HardwarePlan, ProgressParser, content_sha256_bytes,
+    AttemptOutcome, Backend, CpuFallback, DowngradeCode, ExecutionPolicy, FORCED_FAILURE_DEVICE,
+    FfmpegError, FfmpegRunner, FfprobeReport, HardwarePlan, ProgressParser, content_sha256_bytes,
 };
 
 use crate::cli::{Cli, Command, MediaCommand};
@@ -143,7 +143,7 @@ fn forced_fallback(
             "hardware backend is quarantined; forced fallback requires a hardware attempt"
         )
     }
-    let invalid_device = Path::new("__ovayra_definitely_invalid_hardware_device__");
+    let invalid_device = Path::new(FORCED_FAILURE_DEVICE);
     let outcome = run_forced_hardware_attempt(
         backend,
         ffmpeg,

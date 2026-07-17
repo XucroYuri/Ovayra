@@ -7,6 +7,9 @@ use std::{
 
 static QUARANTINED_HARDWARE: AtomicU8 = AtomicU8::new(0);
 
+/// Canonical invalid device used only by the forced-fallback proof.
+pub const FORCED_FAILURE_DEVICE: &str = "__ovayra_definitely_invalid_hardware_device__";
+
 /// Stable names for the hardware paths evaluated in the feasibility spike.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -565,9 +568,7 @@ impl HardwarePlan {
         }
         args.push(OsString::from("-t"));
         args.push(OsString::from("10"));
-        if render_device.is_some_and(|device| {
-            device == Path::new("__ovayra_definitely_invalid_hardware_device__")
-        }) {
+        if render_device.is_some_and(|device| device == Path::new(FORCED_FAILURE_DEVICE)) {
             // A deliberately unknown option fails closed even if a driver ignores device selection.
             args.push(OsString::from("-ovayra_forced_hardware_failure"));
         }

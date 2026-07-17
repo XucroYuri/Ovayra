@@ -1,4 +1,4 @@
-use spike_media::{AttemptOutcome, Backend, DowngradeCode, ExecutionPolicy};
+use spike_media::{AttemptOutcome, Backend, DowngradeCode, ExecutionPolicy, FORCED_FAILURE_DEVICE};
 use std::path::Path;
 
 #[test]
@@ -133,12 +133,19 @@ fn forced_hardware_plan_passes_the_invalid_device_to_every_backend() {
         let args = spike_media::HardwarePlan::self_test(backend).transcode_args(
             Path::new("hardware-input.mp4"),
             Path::new("output.mp4"),
-            Some(Path::new("__invalid_device__")),
+            Some(Path::new(FORCED_FAILURE_DEVICE)),
         );
         let args = args
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert!(args.iter().any(|argument| argument == "__invalid_device__"));
+        assert!(
+            args.iter()
+                .any(|argument| argument == FORCED_FAILURE_DEVICE)
+        );
+        assert!(
+            args.iter()
+                .any(|argument| argument == "-ovayra_forced_hardware_failure")
+        );
     }
 }

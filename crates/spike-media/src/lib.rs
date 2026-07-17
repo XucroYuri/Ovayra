@@ -8,8 +8,9 @@ mod ffmpeg;
 mod progress;
 
 pub use capability::{
-    AttemptOutcome, Backend, DowngradeCode, ExecutionPolicy, ExecutionPolicyError, HardwarePlan,
-    Inventory, InventoryCommand, InventoryError, InventoryOutput,
+    AttemptOutcome, Backend, DowngradeCode, ExecutionPolicy, ExecutionPolicyError,
+    FORCED_FAILURE_DEVICE, HardwarePlan, Inventory, InventoryCommand, InventoryError,
+    InventoryOutput,
 };
 pub use cpu_fallback::{
     CpuFallback, CpuFallbackError, CpuFallbackOutput, FfprobeError, FfprobeReport,

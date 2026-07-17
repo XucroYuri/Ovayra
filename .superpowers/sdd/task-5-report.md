@@ -55,3 +55,11 @@ quarantined backend rather than silently using CPU. Forced fallback likewise req
 attempt, then uses a separate no-preflight forced attempt so the deliberate invalid command is
 actually spawned. Normal attempts retain preflight. The hardware command builder was simplified
 so VAAPI emits one device pair only, and normal runner stdout is capped while excess is drained.
+
+## Final orchestration coverage
+
+Unix binary integration tests now launch the compiled CLI with isolated fake FFmpeg/ffprobe
+executables for every backend. They prove the forced command (including the canonical invalid
+device and fail-closed option) runs and fails before the CPU VP9/Opus command, validate the two
+exact output lines and evidence fields, and prove a surprising hardware success writes no pass
+evidence and never starts CPU.
