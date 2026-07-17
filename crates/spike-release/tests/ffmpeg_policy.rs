@@ -47,7 +47,9 @@ fn rejects_duplicate_checksum_entries_and_unlisted_regular_files() {
         "00  provenance/buildconf.txt\n00  provenance/buildconf.txt\n",
     )
     .unwrap();
-    let error = FfmpegBundle::validate_layout(bundle.path()).unwrap_err();
+    let error =
+        FfmpegBundle::validate_layout_with_lock(bundle.path(), &trusted_lock(bundle.path()))
+            .unwrap_err();
     assert!(matches!(
         error,
         FfmpegPolicyError::InvalidChecksumManifest(_)
@@ -71,21 +73,46 @@ fn rejects_an_executable_symlink_that_escapes_the_bundle() {
 #[test]
 fn accepts_a_complete_lgpl_only_layout_with_cyclonedx_hash_and_license_evidence() {
     let bundle = valid_layout();
-    FfmpegBundle::validate_layout(bundle.path()).unwrap();
+    FfmpegBundle::validate_layout_with_lock(bundle.path(), &trusted_lock(bundle.path())).unwrap();
+}
+
+#[test]
+fn default_validator_rejects_a_bundle_with_a_coordinately_replaced_lock() {
+    let bundle = valid_layout();
+    let error = FfmpegBundle::validate_layout(bundle.path()).unwrap_err();
+    assert!(matches!(error, FfmpegPolicyError::InvalidBuildconf(_)));
 }
 
 #[test]
 fn windows_marker_requires_exe_paths_instead_of_host_platform_paths() {
     let bundle = valid_layout();
-    write_file(bundle.path(), ".ovayra-target", "x86_64-pc-windows-msvc\n");
+    write_file(bundle.path(), ".ovayra-target", "windows-x64-mf\n");
     let error = FfmpegBundle::validate_layout(bundle.path()).unwrap_err();
     assert!(matches!(error, FfmpegPolicyError::MissingArtifact(path) if path == "bin/ffmpeg.exe"));
 }
 
 #[test]
+fn rejects_missing_or_unrecognized_target_marker() {
+    let missing = valid_layout();
+    fs::remove_file(missing.path().join(".ovayra-target")).unwrap();
+    assert!(matches!(
+        FfmpegBundle::validate_layout(missing.path()),
+        Err(FfmpegPolicyError::MissingArtifact(_))
+    ));
+    let wrong = valid_layout();
+    write_file(wrong.path(), ".ovayra-target", "windows-x64-unknown\n");
+    rewrite_sums(wrong.path());
+    assert!(matches!(
+        FfmpegBundle::validate_layout(wrong.path()),
+        Err(FfmpegPolicyError::UnsafePath(_))
+    ));
+}
+
+#[test]
 fn rejects_inexact_or_swapped_executable_version_banners() {
     let bundle = executable_layout("ffprobe version 8.1.2", "ffmpeg version 8.1.20");
-    let error = FfmpegBundle::validate(bundle.path()).unwrap_err();
+    let error =
+        FfmpegBundle::validate_with_lock(bundle.path(), &trusted_lock(bundle.path())).unwrap_err();
     assert!(matches!(error, FfmpegPolicyError::ExecutableCheck(_)));
 }
 
@@ -100,7 +127,9 @@ fn rejects_regenerated_manifest_when_sbom_archive_hash_is_replaced() {
     )
     .unwrap();
     rewrite_sums(bundle.path());
-    let error = FfmpegBundle::validate_layout(bundle.path()).unwrap_err();
+    let error =
+        FfmpegBundle::validate_layout_with_lock(bundle.path(), &trusted_lock(bundle.path()))
+            .unwrap_err();
     assert!(matches!(error, FfmpegPolicyError::InvalidSbom(_)));
 }
 
@@ -113,12 +142,15 @@ fn rejects_replaced_source_after_checksum_manifest_is_regenerated() {
     )
     .unwrap();
     rewrite_sums(bundle.path());
-    let error = FfmpegBundle::validate_layout(bundle.path()).unwrap_err();
+    let error =
+        FfmpegBundle::validate_layout_with_lock(bundle.path(), &trusted_lock(bundle.path()))
+            .unwrap_err();
     assert!(matches!(error, FfmpegPolicyError::ChecksumMismatch(_)));
 }
 
 fn valid_layout() -> tempfile::TempDir {
     let bundle = tempfile::tempdir().unwrap();
+    write_file(bundle.path(), ".ovayra-target", "macos-arm64-vt\n");
     for relative in [
         "bin/ffmpeg",
         "bin/ffprobe",
@@ -211,8 +243,9 @@ fn rewrite_sums(root: &Path) {
     write_file(root, "provenance/SHA256SUMS", &sums);
 }
 
-fn required_files() -> [&'static str; 15] {
+fn required_files() -> [&'static str; 16] {
     [
+        ".ovayra-target",
         "bin/ffmpeg",
         "bin/ffprobe",
         "provenance/ffmpeg-8.1.2.tar.xz",
@@ -240,4 +273,8 @@ fn write_file(root: &Path, relative: &str, contents: &str) {
 fn sha256(path: impl AsRef<Path>) -> String {
     use sha2::{Digest, Sha256};
     hex::encode(Sha256::digest(fs::read(path).unwrap()))
+}
+
+fn trusted_lock(root: &Path) -> String {
+    fs::read_to_string(root.join("provenance/ffmpeg.lock")).unwrap()
 }

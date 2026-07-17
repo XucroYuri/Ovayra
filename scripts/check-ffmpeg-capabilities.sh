@@ -12,8 +12,7 @@ filters=$("$ffmpeg" -hide_banner -filters | awk '/^[ .TSC]{3}/ {print $2}')
 require vp9 echo "$decoders"; require libvpx-vp9 echo "$encoders"; require libopus echo "$encoders"
 case "$target_id" in
   macos-arm64-vt) require videotoolbox echo "$hwaccels" ;;
-  windows-x64-mf) require d3d11va echo "$hwaccels"; require h264_mf echo "$encoders" ;;
-  windows-x64-nvidia|linux-x64-nvidia) require cuda echo "$hwaccels"; require h264_nvenc echo "$encoders" ;;
-  linux-x64-vaapi-wayland|linux-x64-vaapi-x11) require vaapi echo "$hwaccels"; require scale_vaapi echo "$filters" ;;
+  windows-x64-mf|windows-x64-nvidia) require d3d11va echo "$hwaccels"; require dxva2 echo "$hwaccels"; require h264_mf echo "$encoders"; require cuda echo "$hwaccels"; require h264_nvenc echo "$encoders"; require hevc_nvenc echo "$encoders"; require h264_cuvid echo "$decoders" ;;
+  linux-x64-vaapi-wayland|linux-x64-vaapi-x11|linux-x64-nvidia) require vaapi echo "$hwaccels"; require scale_vaapi echo "$filters"; require cuda echo "$hwaccels"; require h264_nvenc echo "$encoders"; require hevc_nvenc echo "$encoders"; require h264_cuvid echo "$decoders" ;;
   *) echo "unsupported target: $target_id" >&2; exit 64 ;;
 esac

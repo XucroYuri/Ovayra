@@ -3,8 +3,8 @@ set -euo pipefail
 source_root= dependency_prefix= stage_root= parallelism=
 while [[ $# -gt 0 ]]; do case "$1" in --source-root) source_root=$2; shift 2;; --dependency-prefix) dependency_prefix=$2; shift 2;; --stage-root) stage_root=$2; shift 2;; --parallelism) parallelism=$2; shift 2;; *) exit 64;; esac; done
 [[ -n "$source_root" && -n "$dependency_prefix" && -n "$stage_root" && -n "$parallelism" && -n "${SOURCE_DATE_EPOCH:-}" ]]
-marker="$stage_root/.ovayra-target"; [[ ! -e "$stage_root" || ( -f "$marker" && "$(<"$marker")" == x86_64-pc-windows-msvc ) ]] || exit 65
-mkdir -p "$stage_root"/{provenance,LICENSES,sbom}; printf '%s\n' x86_64-pc-windows-msvc > "$marker"
+marker="$stage_root/.ovayra-target"; [[ ! -e "$stage_root" || ( -f "$marker" && "$(<"$marker")" == windows-x64-mf ) ]] || exit 65
+mkdir -p "$stage_root"/{provenance,LICENSES,sbom}; printf '%s\n' windows-x64-mf > "$marker"
 cd "$source_root/libvpx"; ./configure --target=x86_64-win64-vs17 --prefix="$dependency_prefix" --disable-examples --disable-tools; make -j"$parallelism"; make test; make install
 cd "$source_root/opus"; ./configure --host=x86_64-w64-mingw32 --prefix="$dependency_prefix" --disable-doc; make -j"$parallelism"; make check; make install
 cd "$source_root/nv-codec-headers"; make PREFIX="$dependency_prefix" install

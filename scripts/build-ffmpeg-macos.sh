@@ -12,7 +12,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$source_root" && -n "$dependency_prefix" && -n "$stage_root" && -n "$parallelism" ]]
-target_triple=aarch64-apple-darwin
+target_triple=macos-arm64-vt
 [[ -n "${SOURCE_DATE_EPOCH:-}" ]] || { echo 'SOURCE_DATE_EPOCH must be set from FFmpeg n8.1.2' >&2; exit 64; }
 marker="$stage_root/.ovayra-target"
 if [[ -e "$stage_root" && (! -f "$marker" || "$(<"$marker")" != "$target_triple") ]]; then echo "refusing cross-target stage overwrite" >&2; exit 65; fi

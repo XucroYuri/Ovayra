@@ -114,15 +114,17 @@ jobs:
         run: |
           set -euo pipefail
           export SOURCE_DATE_EPOCH="$(cat target/ffmpeg-source/source-date-epoch)"
+          stable="$GITHUB_WORKSPACE/target/ffmpeg-stable"
           for build in a b; do
-            work="target/ffmpeg-$build"; rm -rf "$work"; mkdir -p "$work"; cp -R target/ffmpeg-source "$work/source"
-            bash "${{ matrix.target.script }}" --source-root "$work/source" --dependency-prefix "$work/deps" --stage-root "$work/stage" --parallelism "$(getconf _NPROCESSORS_ONLN || sysctl -n hw.ncpu)"
-            bash scripts/check-ffmpeg-capabilities.sh --target-id "$OVAYRA_TARGET_ID" --ffmpeg "$work/stage/bin/ffmpeg"
-            "$work/stage/bin/ffmpeg" -f lavfi -i testsrc2=size=320x180:rate=30 -f lavfi -i sine=frequency=1000 -t 10 -c:v libvpx-vp9 -c:a libopus "$work/input.webm"
-            cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg "$work/stage/bin/ffmpeg" --ffprobe "$work/stage/bin/ffprobe" --output "$work/fallback.webm" --evidence "$work/cpu-evidence.json"
-            cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$work/stage" --evidence "docs/phase-0/evidence/ffmpeg-bundle-${OVAYRA_TARGET_ID}-$build.json"
+            rm -rf "$stable"; mkdir -p "$stable"; cp -R target/ffmpeg-source "$stable/source"
+            bash "${{ matrix.target.script }}" --source-root "$stable/source" --dependency-prefix "$stable/deps" --stage-root "$stable/stage" --parallelism "$(getconf _NPROCESSORS_ONLN || sysctl -n hw.ncpu)"
+            bash scripts/check-ffmpeg-capabilities.sh --target-id "$OVAYRA_TARGET_ID" --ffmpeg "$stable/stage/bin/ffmpeg"
+            "$stable/stage/bin/ffmpeg" -f lavfi -i testsrc2=size=320x180:rate=30 -f lavfi -i sine=frequency=1000 -t 10 -c:v libvpx-vp9 -c:a libopus "$stable/input.webm"
+            cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg "$stable/stage/bin/ffmpeg" --ffprobe "$stable/stage/bin/ffprobe" --output "$stable/fallback.webm" --evidence "$stable/cpu-evidence.json"
+            cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$stable/stage" --evidence "docs/phase-0/evidence/ffmpeg-bundle-${OVAYRA_TARGET_ID}-$build.json"
+            cp -R "$stable/stage" "target/ffmpeg-$build-stage"; cp "$stable/cpu-evidence.json" "target/ffmpeg-$build-cpu-evidence.json"
           done
-          bash scripts/compare-ffmpeg-reproducibility.sh target/ffmpeg-a/stage target/ffmpeg-b/stage
+          bash scripts/compare-ffmpeg-reproducibility.sh target/ffmpeg-a-stage target/ffmpeg-b-stage
       - name: Build clean bundle A and B, validate policy, capabilities, and CPU smoke (Windows)
         if: runner.os == 'Windows'
         shell: pwsh

@@ -15,7 +15,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const FFMPEG_VERSION: &str = "8.1.2";
+const PROJECT_LOCK: &str = include_str!("../../../packaging/ffmpeg.lock");
 const REQUIRED_ARTIFACTS: &[&str] = &[
+    ".ovayra-target",
     "bin/ffmpeg",
     "bin/ffprobe",
     "provenance/ffmpeg-8.1.2.tar.xz",
@@ -83,6 +85,19 @@ impl FfmpegBundle {
     /// Returns an error for missing, unsafe, unchecked, modified, unlicensed, or malformed
     /// bundle material.
     pub fn validate_layout(root: &Path) -> Result<(), FfmpegPolicyError> {
+        Self::validate_layout_with_lock(root, PROJECT_LOCK)
+    }
+
+    /// Verifies a bundle against a caller-supplied, authenticated project lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the bundled lock is byte-identical to `trusted_lock` and every
+    /// required material check succeeds. Production callers should use [`Self::validate_layout`].
+    pub fn validate_layout_with_lock(
+        root: &Path,
+        trusted_lock: &str,
+    ) -> Result<(), FfmpegPolicyError> {
         let root = canonical_directory(root)?;
         let artifacts = required_artifacts(&root)?;
         for artifact in &artifacts {
@@ -91,7 +106,7 @@ impl FfmpegBundle {
         }
         validate_no_symlink_or_unlisted_files(&root, &artifacts)?;
         validate_checksums(&root, &artifacts)?;
-        validate_locked_source(&root)?;
+        validate_locked_source(&root, trusted_lock)?;
         let buildconf = fs::read_to_string(root.join("provenance/buildconf.txt"))?;
         Self::validate_buildconf(&buildconf)?;
         validate_sbom(&root)
@@ -105,25 +120,18 @@ impl FfmpegBundle {
     /// unsuccessfully, or reports a source/configuration that violates policy.
     pub fn validate(root: &Path) -> Result<(), FfmpegPolicyError> {
         Self::validate_layout(root)?;
-        let root = canonical_directory(root)?;
-        for program in ["ffmpeg", "ffprobe"] {
-            let executable = executable_path(&root, program)?;
-            let output = run_checked(&executable, "-version")?;
-            let stdout = String::from_utf8_lossy(&output);
-            let expected = format!("{program} version {FFMPEG_VERSION}");
-            if stdout.lines().next().map(str::trim_start) != Some(expected.as_str()) {
-                return Err(FfmpegPolicyError::ExecutableCheck(format!(
-                    "{program} did not report exact source version {FFMPEG_VERSION}"
-                )));
-            }
-        }
-        let buildconf = String::from_utf8_lossy(&run_checked(
-            &executable_path(&root, "ffmpeg")?,
-            "-buildconf",
-        )?)
-        .into_owned();
-        Self::validate_buildconf(&buildconf)?;
-        Ok(())
+        validate_executables(root)
+    }
+
+    /// Executes a bundle after verifying it against a caller-supplied authenticated lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::validate`] and fails before executing any binary if
+    /// the bundle does not match `trusted_lock`.
+    pub fn validate_with_lock(root: &Path, trusted_lock: &str) -> Result<(), FfmpegPolicyError> {
+        Self::validate_layout_with_lock(root, trusted_lock)?;
+        validate_executables(root)
     }
 
     /// Parses the `configuration:` record as shell-like tokens, rejecting ambiguous quoting.
@@ -165,6 +173,27 @@ impl FfmpegBundle {
     }
 }
 
+fn validate_executables(root: &Path) -> Result<(), FfmpegPolicyError> {
+    let root = canonical_directory(root)?;
+    for program in ["ffmpeg", "ffprobe"] {
+        let executable = executable_path(&root, program)?;
+        let output = run_checked(&executable, "-version")?;
+        let stdout = String::from_utf8_lossy(&output);
+        let expected = format!("{program} version {FFMPEG_VERSION}");
+        if stdout.lines().next().map(str::trim_start) != Some(expected.as_str()) {
+            return Err(FfmpegPolicyError::ExecutableCheck(format!(
+                "{program} did not report exact source version {FFMPEG_VERSION}"
+            )));
+        }
+    }
+    let buildconf = String::from_utf8_lossy(&run_checked(
+        &executable_path(&root, "ffmpeg")?,
+        "-buildconf",
+    )?)
+    .into_owned();
+    FfmpegBundle::validate_buildconf(&buildconf)
+}
+
 #[derive(Deserialize)]
 struct LockFile {
     ffmpeg: LockedFfmpeg,
@@ -182,11 +211,16 @@ struct SignatureAttestation {
     sha256: String,
 }
 
-fn validate_locked_source(root: &Path) -> Result<(), FfmpegPolicyError> {
-    let lock: LockFile = toml::from_str(&fs::read_to_string(root.join("provenance/ffmpeg.lock"))?)
-        .map_err(|error| {
-            FfmpegPolicyError::InvalidBuildconf(format!("invalid source lock: {error}"))
-        })?;
+fn validate_locked_source(root: &Path, trusted_lock: &str) -> Result<(), FfmpegPolicyError> {
+    let bundled = fs::read_to_string(root.join("provenance/ffmpeg.lock"))?;
+    if bundled != trusted_lock {
+        return Err(FfmpegPolicyError::InvalidBuildconf(
+            "bundle lock differs from authenticated project lock".into(),
+        ));
+    }
+    let lock: LockFile = toml::from_str(&bundled).map_err(|error| {
+        FfmpegPolicyError::InvalidBuildconf(format!("invalid source lock: {error}"))
+    })?;
     let actual = sha256_file(&root.join("provenance/ffmpeg-8.1.2.tar.xz"))?;
     if lock.ffmpeg.version != FFMPEG_VERSION || lock.ffmpeg.sha256 != actual {
         return Err(FfmpegPolicyError::ChecksumMismatch(
@@ -237,12 +271,15 @@ fn required_artifacts(root: &Path) -> Result<Vec<String>, FfmpegPolicyError> {
         .iter()
         .map(|value| (*value).to_owned())
         .collect::<Vec<_>>();
-    let marker = root.join(".ovayra-target");
-    if marker.exists() {
-        let target = fs::read_to_string(&marker)?;
-        if target.trim().starts_with("x86_64-pc-windows-")
-            || target.trim().starts_with("x86_64-unknown-linux-")
-        {
+    let target = fs::read_to_string(root.join(".ovayra-target"))
+        .map_err(|_| FfmpegPolicyError::MissingArtifact(".ovayra-target".into()))?;
+    match target.trim() {
+        "macos-arm64-vt" => {}
+        "windows-x64-mf"
+        | "windows-x64-nvidia"
+        | "linux-x64-vaapi-wayland"
+        | "linux-x64-vaapi-x11"
+        | "linux-x64-nvidia" => {
             artifacts.extend(
                 [
                     "provenance/nv-codec-headers-source.tar.zst",
@@ -252,15 +289,20 @@ fn required_artifacts(root: &Path) -> Result<Vec<String>, FfmpegPolicyError> {
                 .map(str::to_owned),
             );
         }
-        if target.trim().starts_with("x86_64-pc-windows-") {
-            for program in ["ffmpeg", "ffprobe"] {
-                let regular = format!("bin/{program}");
-                let position = artifacts
-                    .iter()
-                    .position(|artifact| artifact == &regular)
-                    .expect("fixed required artifact exists");
-                artifacts[position] = format!("bin/{program}.exe");
-            }
+        other => {
+            return Err(FfmpegPolicyError::UnsafePath(format!(
+                "unsupported target marker {other}"
+            )));
+        }
+    }
+    if target.trim().starts_with("windows-") {
+        for program in ["ffmpeg", "ffprobe"] {
+            let regular = format!("bin/{program}");
+            let position = artifacts
+                .iter()
+                .position(|artifact| artifact == &regular)
+                .expect("fixed required artifact exists");
+            artifacts[position] = format!("bin/{program}.exe");
         }
     }
     Ok(artifacts)
@@ -478,7 +520,7 @@ fn executable_path(root: &Path, program: &str) -> Result<PathBuf, FfmpegPolicyEr
     let file = if root.join(".ovayra-target").exists()
         && fs::read_to_string(root.join(".ovayra-target"))?
             .trim()
-            .starts_with("x86_64-pc-windows-")
+            .starts_with("windows-")
     {
         format!("{program}.exe")
     } else {

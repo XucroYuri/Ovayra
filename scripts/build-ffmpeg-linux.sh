@@ -3,7 +3,7 @@ set -euo pipefail
 
 source_root= dependency_prefix= stage_root= parallelism=
 while [[ $# -gt 0 ]]; do case "$1" in --source-root) source_root=$2; shift 2;; --dependency-prefix) dependency_prefix=$2; shift 2;; --stage-root) stage_root=$2; shift 2;; --parallelism) parallelism=$2; shift 2;; *) echo "usage: $0 --source-root DIR --dependency-prefix DIR --stage-root DIR --parallelism N" >&2; exit 64;; esac; done
-[[ -n "$source_root" && -n "$dependency_prefix" && -n "$stage_root" && -n "$parallelism" ]]; target_triple=x86_64-unknown-linux-gnu
+[[ -n "$source_root" && -n "$dependency_prefix" && -n "$stage_root" && -n "$parallelism" ]]; target_triple=linux-x64-vaapi-wayland
 [[ -n "${SOURCE_DATE_EPOCH:-}" ]] || { echo 'SOURCE_DATE_EPOCH must be set from FFmpeg n8.1.2' >&2; exit 64; }; marker="$stage_root/.ovayra-target"
 if [[ -e "$stage_root" && (! -f "$marker" || "$(<"$marker")" != "$target_triple") ]]; then echo "refusing cross-target stage overwrite" >&2; exit 65; fi
 mkdir -p "$stage_root"/{provenance,LICENSES,sbom}; printf '%s\n' "$target_triple" > "$marker"; export SOURCE_DATE_EPOCH CFLAGS="${CFLAGS:-} -fdebug-prefix-map=$source_root=/usr/src/ovayra"
