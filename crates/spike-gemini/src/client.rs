@@ -170,6 +170,7 @@ impl GeminiClient {
         let upload_base = Url::parse(upload_base).map_err(|_| GeminiError::InvalidEndpoint)?;
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(0)
             .build()
             .map_err(|_| GeminiError::Transport)?;
         Ok(Self {
@@ -246,6 +247,15 @@ impl GeminiClient {
                     if transient(response.status())
                         && attempt + 1 < self.retry_policy.max_attempts =>
                 {
+                    if response.status().is_server_error() {
+                        let observed = self.query_offset(session).await?;
+                        if observed == expected {
+                            return Ok(());
+                        }
+                        if observed != offset {
+                            return Err(GeminiError::Protocol);
+                        }
+                    }
                     sleep(retry_delay(
                         response.headers(),
                         attempt,

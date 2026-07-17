@@ -50,7 +50,13 @@ pre-existing workspace policy issue is outside Task 7's dependency pins.
 | Behavior | Production-path test | Command |
 | --- | --- | --- |
 | Non-final chunk retries only 429/5xx, not 4xx | `chunk_retries_429_and_5xx_but_not_4xx` | `cargo test -p spike-gemini --test resumable_contract -- --test-threads=1` |
+| Ambiguous chunk accepts only exact server offset | `ambiguous_chunk_transport_queries_and_accepts_exact_expected_offset` | same command |
+| Ambiguous chunk lower/higher offsets fail closed | `ambiguous_chunk_lower_observed_offset_fails_without_stale_replay`; `ambiguous_chunk_higher_observed_offset_fails_without_stale_replay` | same command |
 | Persistent processing timeout with bounded policy | `persistent_processing_returns_poll_timeout` | same command; test loops 20 times |
 | Empty decoded generation is redacted metrics | `decoded_empty_generation_returns_redacted_failure_metrics` | same command |
 | Server offset supersedes checkpoint hint | `resume_orchestration_uses_server_offset_when_checkpoint_hint_differs` | `cargo test -p ovayra-spike -- --test-threads=1` |
+
+Stability evidence: `resumable_contract` passed 20 serial runs with a per-run external
+10-second cap; each 12-test run completed in 3.48–3.77 seconds. The local fault servers
+have a two-second lifecycle bound and one-second socket I/O bounds.
 | Terminal analysis failure cleans remote file | `terminal_analysis_failure_still_attempts_remote_cleanup` | same command |

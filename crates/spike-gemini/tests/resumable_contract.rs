@@ -1,4 +1,12 @@
-use std::time::Duration;
+use std::{
+    collections::VecDeque,
+    io::ErrorKind,
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    sync::{Arc, Mutex},
+    thread,
+    time::{Duration, Instant},
+};
 
 use spike_gemini::{FileState, GeminiClient, PollPolicy, RetryPolicy};
 use spike_platform::{EnvelopeCipher, MemorySecretStore};
@@ -16,6 +24,204 @@ fn no_wait_client(server: &MockServer) -> GeminiClient {
         RetryPolicy::bounded(3, Duration::ZERO),
     )
     .unwrap()
+}
+
+const SERVER_IO_TIMEOUT: Duration = Duration::from_secs(1);
+const SERVER_LIFETIME: Duration = Duration::from_secs(2);
+type RecordedContractRequests = Arc<Mutex<Vec<(String, usize)>>>;
+
+fn accept_before_deadline(listener: &TcpListener, deadline: Instant) -> Result<TcpStream, String> {
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .map_err(|error| format!("stream blocking setup: {error}"))?;
+                return Ok(stream);
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err("accept timeout".to_owned());
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => return Err(format!("accept error: {error}")),
+        }
+    }
+}
+
+fn read_request(stream: &mut TcpStream) -> Result<(String, usize), String> {
+    stream
+        .set_read_timeout(Some(SERVER_IO_TIMEOUT))
+        .map_err(|error| format!("read timeout setup: {error}"))?;
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let header_end = loop {
+        let count = stream
+            .read(&mut buffer)
+            .map_err(|error| format!("request header read: {error}"))?;
+        if count == 0 {
+            return Err("connection closed before request headers".to_owned());
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+        if let Some(position) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position;
+        }
+    };
+    let headers = String::from_utf8_lossy(&bytes[..header_end + 4]).into_owned();
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            line.split_once(':').and_then(|(name, value)| {
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+        })
+        .unwrap_or(0);
+    while bytes.len() < header_end + 4 + content_length {
+        let count = stream
+            .read(&mut buffer)
+            .map_err(|error| format!("request body read: {error}"))?;
+        if count == 0 {
+            return Err("connection closed before request body".to_owned());
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+    }
+    Ok((headers, content_length))
+}
+
+fn write_response(stream: &mut TcpStream, response: &str) -> Result<(), String> {
+    stream
+        .set_write_timeout(Some(SERVER_IO_TIMEOUT))
+        .map_err(|error| format!("write timeout setup: {error}"))?;
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|error| format!("response write: {error}"))?;
+    stream
+        .flush()
+        .map_err(|error| format!("response flush: {error}"))
+}
+
+fn request_summary(headers: &str, body_length: usize) -> String {
+    let request_line = headers.lines().next().unwrap_or("unknown");
+    let command = header_value(headers, "x-goog-upload-command").unwrap_or("none");
+    format!("{request_line} command={command} bytes={body_length}")
+}
+
+fn closing_upload_server(
+    observed: u64,
+) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&requests);
+    let task = thread::spawn(move || {
+        let deadline = Instant::now() + SERVER_LIFETIME;
+        for _ in 0..2 {
+            let mut stream = match accept_before_deadline(&listener, deadline) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    recorded.lock().unwrap().push(error);
+                    break;
+                }
+            };
+            let (headers, body_length) = match read_request(&mut stream) {
+                Ok(request) => request,
+                Err(error) => {
+                    recorded.lock().unwrap().push(error);
+                    continue;
+                }
+            };
+            let command = header_value(&headers, "x-goog-upload-command").unwrap_or_default();
+            recorded
+                .lock()
+                .unwrap()
+                .push(request_summary(&headers, body_length));
+            if command == "query" {
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nx-goog-upload-size-received: {observed}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                );
+                if let Err(error) = write_response(&mut stream, &reply) {
+                    recorded.lock().unwrap().push(error);
+                }
+            }
+        }
+    });
+    (format!("http://{address}/session/1"), requests, task)
+}
+
+fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
+    headers.lines().find_map(|line| {
+        line.split_once(':').and_then(|(candidate, value)| {
+            candidate.eq_ignore_ascii_case(name).then_some(value.trim())
+        })
+    })
+}
+
+fn resumable_contract_server() -> (String, RecordedContractRequests, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&requests);
+    let session_url = format!("http://{address}/session/sensitive-upload-url");
+    let task = thread::spawn(move || {
+        let deadline = Instant::now() + SERVER_LIFETIME;
+        for _ in 0..4 {
+            let mut stream = match accept_before_deadline(&listener, deadline) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    recorded.lock().unwrap().push((error, 0));
+                    break;
+                }
+            };
+            let (headers, body_length) = match read_request(&mut stream) {
+                Ok(request) => request,
+                Err(error) => {
+                    recorded.lock().unwrap().push((error, 0));
+                    continue;
+                }
+            };
+            let request_line = headers.lines().next().unwrap_or_default();
+            let command = header_value(&headers, "x-goog-upload-command").unwrap_or_default();
+            let offset = header_value(&headers, "x-goog-upload-offset");
+            let label = if request_line.starts_with("POST /upload/v1beta/files ") {
+                "start"
+            } else if command == "upload" && offset == Some("0") {
+                "upload"
+            } else if command == "query" {
+                "query"
+            } else if command == "upload, finalize" && offset == Some("4") {
+                "finalize"
+            } else {
+                "unexpected"
+            };
+            recorded
+                .lock()
+                .unwrap()
+                .push((label.to_owned(), body_length));
+            let response = match label {
+                "start" => format!(
+                    "HTTP/1.1 200 OK\r\nx-goog-upload-url: {session_url}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                ),
+                "upload" | "query" => "HTTP/1.1 200 OK\r\nx-goog-upload-size-received: 4\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned(),
+                "finalize" => {
+                    let body = r#"{"file":{"name":"files/1","uri":"gemini://files/1","mimeType":"video/webm","state":"PROCESSING"}}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                _ => "HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned(),
+            };
+            if let Err(error) = write_response(&mut stream, &response) {
+                recorded.lock().unwrap().push((error, 0));
+            }
+        }
+    });
+    (format!("http://{address}"), requests, task)
 }
 
 #[tokio::test]
@@ -57,7 +263,7 @@ async fn rejects_non_final_chunks_that_do_not_honor_server_granularity() {
         )
         .mount(&server)
         .await;
-    let client = client(&server);
+    let client = no_wait_client(&server);
     let session = client
         .start_upload("synthetic", "video/webm", 8)
         .await
@@ -69,42 +275,57 @@ async fn rejects_non_final_chunks_that_do_not_honor_server_granularity() {
 async fn chunk_retries_429_and_5xx_but_not_4xx() {
     for status in [429, 503] {
         let server = MockServer::start().await;
-        let session_url = format!("{}/session/1", server.uri());
         Mock::given(matchers::path("/upload/v1beta/files"))
             .respond_with(
-                ResponseTemplate::new(200).insert_header("x-goog-upload-url", session_url),
+                ResponseTemplate::new(200)
+                    .insert_header("x-goog-upload-url", format!("{}/session/1", server.uri())),
             )
             .mount(&server)
             .await;
+        let responses = Arc::new(Mutex::new(VecDeque::from([
+            ResponseTemplate::new(status).insert_header("retry-after", "0"),
+            ResponseTemplate::new(200),
+        ])));
         Mock::given(matchers::header("x-goog-upload-command", "upload"))
-            .respond_with(ResponseTemplate::new(status).insert_header("retry-after", "0"))
-            .up_to_n_times(1)
+            .respond_with({
+                let responses = Arc::clone(&responses);
+                move |_request: &wiremock::Request| {
+                    responses
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or_else(|| ResponseTemplate::new(500))
+                }
+            })
             .mount(&server)
             .await;
-        Mock::given(matchers::header("x-goog-upload-command", "upload"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
+        if status == 503 {
+            Mock::given(matchers::header("x-goog-upload-command", "query"))
+                .respond_with(
+                    ResponseTemplate::new(200).insert_header("x-goog-upload-size-received", "0"),
+                )
+                .mount(&server)
+                .await;
+        }
         let client = no_wait_client(&server);
         let session = client
             .start_upload("synthetic", "video/webm", 4)
             .await
             .unwrap();
-        assert!(client.upload_chunk(&session, 0, b"1234").await.is_ok());
+        let result = client.upload_chunk(&session, 0, b"1234").await;
+        assert!(result.is_ok(), "status {status}: {result:?}");
+        assert!(responses.lock().unwrap().is_empty());
     }
     let server = MockServer::start().await;
-    let session_url = format!("{}/session/1", server.uri());
     Mock::given(matchers::path("/upload/v1beta/files"))
-        .respond_with(ResponseTemplate::new(200).insert_header("x-goog-upload-url", session_url))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-goog-upload-url", format!("{}/session/1", server.uri())),
+        )
         .mount(&server)
         .await;
     Mock::given(matchers::header("x-goog-upload-command", "upload"))
         .respond_with(ResponseTemplate::new(400))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
-    Mock::given(matchers::header("x-goog-upload-command", "upload"))
-        .respond_with(ResponseTemplate::new(200))
         .mount(&server)
         .await;
     let client = no_wait_client(&server);
@@ -116,36 +337,83 @@ async fn chunk_retries_429_and_5xx_but_not_4xx() {
 }
 
 #[tokio::test]
-async fn sends_chunks_queries_finalizes_and_never_leaks_sensitive_values() {
+async fn ambiguous_chunk_transport_queries_and_accepts_exact_expected_offset() {
+    let (url, requests, task) = closing_upload_server(4);
     let server = MockServer::start().await;
-    let upload_url = format!("{}/session/sensitive-upload-url", server.uri());
     Mock::given(matchers::path("/upload/v1beta/files"))
-        .respond_with(ResponseTemplate::new(200).insert_header("x-goog-upload-url", &upload_url))
+        .respond_with(ResponseTemplate::new(200).insert_header("x-goog-upload-url", url))
         .mount(&server)
         .await;
-    Mock::given(matchers::method("POST"))
-        .and(matchers::path("/session/sensitive-upload-url"))
-        .and(matchers::header("x-goog-upload-command", "upload"))
-        .and(matchers::header("x-goog-upload-offset", "0"))
-        .respond_with(ResponseTemplate::new(200).insert_header("x-goog-upload-size-received", "4"))
-        .up_to_n_times(1)
+    let client = no_wait_client(&server);
+    let session = client
+        .start_upload("synthetic", "video/webm", 4)
+        .await
+        .unwrap();
+    let result = client.upload_chunk(&session, 0, b"1234").await;
+    task.join().unwrap();
+    let requests = requests.lock().unwrap();
+    assert!(result.is_ok(), "{result:?} {requests:?}");
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("POST /session/1"));
+    assert!(requests[0].contains("command=upload"));
+    assert!(requests[1].contains("POST /session/1"));
+    assert!(requests[1].contains("command=query"));
+}
+
+#[tokio::test]
+async fn ambiguous_chunk_lower_observed_offset_fails_without_stale_replay() {
+    let (url, requests, task) = closing_upload_server(2);
+    let server = MockServer::start().await;
+    Mock::given(matchers::path("/upload/v1beta/files"))
+        .respond_with(ResponseTemplate::new(200).insert_header("x-goog-upload-url", url))
         .mount(&server)
         .await;
-    Mock::given(matchers::method("POST"))
-        .and(matchers::path("/session/sensitive-upload-url"))
-        .and(matchers::header("x-goog-upload-command", "query"))
-        .respond_with(ResponseTemplate::new(200).insert_header("x-goog-upload-size-received", "4"))
+    let client = no_wait_client(&server);
+    let session = client
+        .start_upload("synthetic", "video/webm", 4)
+        .await
+        .unwrap();
+    let result = client.upload_chunk(&session, 0, b"1234").await;
+    task.join().unwrap();
+    let requests = requests.lock().unwrap();
+    assert!(result.is_err(), "{result:?} {requests:?}");
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("command=upload"));
+    assert!(requests[1].contains("command=query"));
+}
+
+#[tokio::test]
+async fn ambiguous_chunk_higher_observed_offset_fails_without_stale_replay() {
+    let (url, requests, task) = closing_upload_server(8);
+    let server = MockServer::start().await;
+    Mock::given(matchers::path("/upload/v1beta/files"))
+        .respond_with(ResponseTemplate::new(200).insert_header("x-goog-upload-url", url))
         .mount(&server)
         .await;
-    Mock::given(matchers::method("POST"))
-        .and(matchers::path("/session/sensitive-upload-url"))
-        .and(matchers::headers("x-goog-upload-command", vec!["upload", "finalize"]))
-        .and(matchers::header("x-goog-upload-offset", "4"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "file": {"name":"files/1", "uri":"gemini://files/1", "mimeType":"video/webm", "state":"PROCESSING"}
-        })))
-        .mount(&server).await;
-    let client = client(&server);
+    let client = no_wait_client(&server);
+    let session = client
+        .start_upload("synthetic", "video/webm", 4)
+        .await
+        .unwrap();
+    let result = client.upload_chunk(&session, 0, b"1234").await;
+    task.join().unwrap();
+    let requests = requests.lock().unwrap();
+    assert!(result.is_err(), "{result:?} {requests:?}");
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("command=upload"));
+    assert!(requests[1].contains("command=query"));
+}
+
+#[tokio::test]
+async fn sends_chunks_queries_finalizes_and_never_leaks_sensitive_values() {
+    let (server_url, requests, task) = resumable_contract_server();
+    let client = GeminiClient::for_endpoints_with_retry_policy(
+        "api-key-that-must-not-leak",
+        &server_url,
+        &server_url,
+        RetryPolicy::bounded(3, Duration::ZERO),
+    )
+    .unwrap();
     let session = client
         .start_upload("synthetic", "video/webm", 8)
         .await
@@ -161,6 +429,16 @@ async fn sends_chunks_queries_finalizes_and_never_leaks_sensitive_values() {
     client.upload_chunk(&session, 0, b"1234").await.unwrap();
     assert_eq!(client.query_offset(&session).await.unwrap(), 4);
     let remote = client.finalize_chunk(&session, 4, b"5678").await.unwrap();
+    task.join().unwrap();
+    assert_eq!(
+        *requests.lock().unwrap(),
+        vec![
+            ("start".to_owned(), 36),
+            ("upload".to_owned(), 4),
+            ("query".to_owned(), 0),
+            ("finalize".to_owned(), 4),
+        ]
+    );
     assert_eq!(remote.state, FileState::Processing);
     let text = format!("{session:?} {client:?}");
     assert!(!text.contains("api-key-that-must-not-leak"));
