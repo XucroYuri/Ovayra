@@ -216,6 +216,18 @@ pub enum ProofError {
 }
 
 impl PhaseZeroProof {
+    /// Builds one schema-v2 record from typed values. Producers must serialize
+    /// it through [`Self::to_pretty_json`] before it is admitted to the gate.
+    #[must_use]
+    pub fn record(component: ProofComponent, row: ProofRow, proof: ProofPayload) -> Self {
+        Self {
+            schema_version: 2,
+            component,
+            row,
+            proof,
+        }
+    }
+
     #[must_use]
     pub fn preview(target: &TargetId, renderer: &str, value: &PreviewProof) -> Self {
         Self {

@@ -112,7 +112,7 @@ jobs:
           ffmpeg="$(find target/phase-0/bundle -type f -name ffmpeg -print -quit)"; ffprobe="$(find target/phase-0/bundle -type f -name ffprobe -print -quit)"
           test -n "$ffmpeg" && test -n "$ffprobe"
           bundle="$(dirname "$(dirname "$ffmpeg")")"
-          cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$bundle" --evidence "docs/phase-0/evidence/hosted-$OVAYRA_TARGET_ID-bundle.json"
+          cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$bundle" --evidence "target/phase-0/hosted-$OVAYRA_TARGET_ID-bundle.json"
           cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg "$ffmpeg" --ffprobe "$ffprobe" --output target/phase-0/fallback.webm --evidence "docs/phase-0/evidence/hosted-$OVAYRA_TARGET_ID-cpu.json"
       - name: Validate bundle and run CPU fallback (Windows)
         if: runner.os == 'Windows' && steps.bundle_windows.outputs.ready == 'true'
@@ -123,7 +123,7 @@ jobs:
           $ffprobe = Get-ChildItem target/phase-0/bundle -Filter ffprobe.exe -File -Recurse | Select-Object -First 1
           if ($null -eq $ffmpeg -or $null -eq $ffprobe) { throw 'Task 10 bundle is incomplete' }
           $bundle = Split-Path (Split-Path $ffmpeg.FullName -Parent) -Parent
-          cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle $bundle --evidence "docs/phase-0/evidence/hosted-$env:OVAYRA_TARGET_ID-bundle.json"
+          cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle $bundle --evidence "target/phase-0/hosted-$env:OVAYRA_TARGET_ID-bundle.json"
           cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg $ffmpeg.FullName --ffprobe $ffprobe.FullName --output target/phase-0/fallback.webm --evidence "docs/phase-0/evidence/hosted-$env:OVAYRA_TARGET_ID-cpu.json"
       - name: Lint evidence before retention upload
         if: always()

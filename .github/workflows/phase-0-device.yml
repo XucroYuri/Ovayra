@@ -117,7 +117,7 @@ jobs:
         run: |
           set -euo pipefail
           bundle="$(dirname "$(dirname "$OVAYRA_FFMPEG")")"
-          cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$bundle" --evidence "docs/phase-0/evidence/bundle-$OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$bundle" --evidence "target/phase-0/bundle-$OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --output target/phase-0/fallback.webm --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-cpu.json"
           render=(); if [ "$OVAYRA_BACKEND" = vaapi ]; then test -e /dev/dri/renderD128; render=(--render-device /dev/dri/renderD128); fi
           cargo run --locked -p ovayra-spike -- media self-test --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --input target/phase-0/fallback.webm --output target/phase-0/hardware.mp4 "${render[@]}" --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-hardware.json"
@@ -127,7 +127,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'; $bundle = Split-Path (Split-Path $env:OVAYRA_FFMPEG -Parent) -Parent
-          cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle $bundle --evidence "docs/phase-0/evidence/bundle-$env:OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle $bundle --evidence "target/phase-0/bundle-$env:OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg $env:OVAYRA_FFMPEG --ffprobe $env:OVAYRA_FFPROBE --output target/phase-0/fallback.webm --evidence "docs/phase-0/evidence/media-$env:OVAYRA_TARGET_ID-cpu.json"
           cargo run --locked -p ovayra-spike -- media self-test --backend $env:OVAYRA_BACKEND --ffmpeg $env:OVAYRA_FFMPEG --ffprobe $env:OVAYRA_FFPROBE --input target/phase-0/fallback.webm --output target/phase-0/hardware.mp4 --evidence "docs/phase-0/evidence/media-$env:OVAYRA_TARGET_ID-hardware.json"
           cargo run --locked -p ovayra-spike -- media forced-fallback --backend $env:OVAYRA_BACKEND --ffmpeg $env:OVAYRA_FFMPEG --ffprobe $env:OVAYRA_FFPROBE --input target/phase-0/fallback.webm --output target/phase-0/forced-fallback.webm --evidence "docs/phase-0/evidence/media-$env:OVAYRA_TARGET_ID-forced.json"
@@ -219,7 +219,7 @@ jobs:
           set -euo pipefail
           test -n "$OVAYRA_GEMINI_API_KEY"; printf '::add-mask::%s\n' "$OVAYRA_GEMINI_API_KEY"
           cargo run --locked -p ovayra-spike -- gemini stage-upload --input target/phase-0/fallback.webm --checkpoint target/phase-0/gemini-checkpoint.json --pause-after-chunks 1 --evidence "docs/phase-0/evidence/gemini-stage-$OVAYRA_TARGET_ID.json"
-          cargo run --locked -p ovayra-spike -- gemini resume-analyze --input target/phase-0/fallback.webm --checkpoint target/phase-0/gemini-checkpoint.json --model gemini-2.5-flash --evidence "docs/phase-0/evidence/gemini-$OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- gemini resume-analyze --input target/phase-0/fallback.webm --checkpoint target/phase-0/gemini-checkpoint.json --model gemini-3.1-flash-lite --evidence "docs/phase-0/evidence/gemini-$OVAYRA_TARGET_ID.json"
           rm -f target/phase-0/gemini-checkpoint.json
       - name: Run two-process protected Gemini resume gate (Windows)
         if: runner.os == 'Windows'
@@ -227,7 +227,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'; if ([string]::IsNullOrWhiteSpace($env:OVAYRA_GEMINI_API_KEY)) { throw 'missing protected Gemini credential' }; Write-Output "::add-mask::$env:OVAYRA_GEMINI_API_KEY"
           cargo run --locked -p ovayra-spike -- gemini stage-upload --input target/phase-0/fallback.webm --checkpoint target/phase-0/gemini-checkpoint.json --pause-after-chunks 1 --evidence "docs/phase-0/evidence/gemini-stage-$env:OVAYRA_TARGET_ID.json"
-          cargo run --locked -p ovayra-spike -- gemini resume-analyze --input target/phase-0/fallback.webm --checkpoint target/phase-0/gemini-checkpoint.json --model gemini-2.5-flash --evidence "docs/phase-0/evidence/gemini-$env:OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- gemini resume-analyze --input target/phase-0/fallback.webm --checkpoint target/phase-0/gemini-checkpoint.json --model gemini-3.1-flash-lite --evidence "docs/phase-0/evidence/gemini-$env:OVAYRA_TARGET_ID.json"
           Remove-Item target/phase-0/gemini-checkpoint.json -Force
       - name: Lint protected evidence before upload
         run: cargo run --locked -p ovayra-spike -- evidence lint --dir docs/phase-0/evidence

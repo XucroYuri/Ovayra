@@ -1,7 +1,7 @@
 use std::{fmt::Write as _, fs, io::Write as _, path::Path};
 
 use anyhow::Result;
-use spike_contracts::{PhaseZeroMatrix, PhaseZeroProof};
+use spike_contracts::{PhaseZeroMatrix, PhaseZeroProof, ProofComponent};
 
 use crate::evidence_lint;
 
@@ -71,16 +71,22 @@ fn reject(
 
 fn render_pass_report(matrix: &PhaseZeroMatrix, sources: &[SourceEvidence]) -> String {
     let mut output = String::from("# Phase 0 Feasibility Report\n\nStatus: PASS\n\n");
-    output.push_str("| Spike | Target | Session | Backend |\n");
-    output.push_str("| --- | --- | --- | --- |\n");
+    output.push_str("| Spike | Target | Session | Backend | Required components |\n");
+    output.push_str("| --- | --- | --- | --- | --- |\n");
     for required in &matrix.required {
+        let components = required_components(required)
+            .iter()
+            .map(|component| component.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         let _ = writeln!(
             output,
-            "| {:?} | {} | {} | {} |",
+            "| {:?} | {} | {} | {} | {} |",
             required.id,
             required.target.as_str(),
             required.session.as_deref().unwrap_or("-"),
             required.backend.as_deref().unwrap_or("-"),
+            components,
         );
     }
     output.push_str(
@@ -90,6 +96,34 @@ fn render_pass_report(matrix: &PhaseZeroMatrix, sources: &[SourceEvidence]) -> S
         let _ = writeln!(output, "| `{}` |", source.sha256);
     }
     output
+}
+
+fn required_components(required: &spike_contracts::RequiredEvidence) -> &'static [ProofComponent] {
+    match required.id {
+        spike_contracts::SpikeId::Preview => &[ProofComponent::Preview],
+        spike_contracts::SpikeId::Media if required.backend.as_deref() == Some("cpu-fallback") => {
+            &[ProofComponent::MediaCpu]
+        }
+        spike_contracts::SpikeId::Media => &[
+            ProofComponent::MediaHardware,
+            ProofComponent::MediaForcedFallback,
+        ],
+        spike_contracts::SpikeId::Gemini => {
+            &[ProofComponent::GeminiStage, ProofComponent::GeminiResume]
+        }
+        spike_contracts::SpikeId::Platform => &[
+            ProofComponent::PlatformKeyring,
+            ProofComponent::PlatformTray,
+            ProofComponent::PlatformNoTray,
+            ProofComponent::PlatformProcess,
+            ProofComponent::PlatformCheckpoint,
+        ],
+        spike_contracts::SpikeId::Distribution => &[
+            ProofComponent::DistributionFfmpeg,
+            ProofComponent::DistributionPackage,
+            ProofComponent::DistributionUpdate,
+        ],
+    }
 }
 
 fn render_no_go_report(reason: &str, sources: &[SourceEvidence]) -> String {
