@@ -10,7 +10,7 @@ use anyhow::Result;
 use serde::de::{self, Error as _, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use sha2::{Digest, Sha256};
-use spike_contracts::{Evidence, SpikeId, TargetId, Verdict};
+use spike_contracts::{Evidence, PhaseZeroProof, SpikeId, TargetId, Verdict};
 use unicode_normalization::UnicodeNormalization;
 
 const MAX_FILE_BYTES: u64 = 1_048_576;
@@ -120,6 +120,13 @@ impl fmt::Debug for LintError {
 
 impl std::error::Error for LintError {}
 
+/// Bytes and digest obtained from the same regular-file handle that passed the
+/// bounded redaction lint. Consumers must parse these bytes directly.
+pub(crate) struct VerifiedEvidence {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) sha256: String,
+}
+
 /// Scans only bounded regular files below `directory`, never follows symlinks,
 /// and reports a stable relative-path/category diagnostic on rejection.
 pub(crate) fn lint_dir(directory: &Path, text_mode: bool) -> Result<()> {
@@ -132,6 +139,13 @@ pub(crate) fn lint_dir(directory: &Path, text_mode: bool) -> Result<()> {
 /// success token. The final acceptance gate uses this so a rejected gate never
 /// emits a misleading success marker.
 pub(crate) fn lint_dir_quiet(directory: &Path, text_mode: bool) -> Result<()> {
+    let _ = lint_verified(directory, text_mode)?;
+    Ok(())
+}
+
+/// Performs one bounded traversal and returns the exact verified JSON bytes.
+/// This closes the lint-to-gate TOCTOU window.
+pub(crate) fn lint_verified(directory: &Path, text_mode: bool) -> Result<Vec<VerifiedEvidence>> {
     let metadata = match fs::symlink_metadata(directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -162,14 +176,23 @@ pub(crate) fn lint_dir_quiet(directory: &Path, text_mode: bool) -> Result<()> {
         return Err(LintError::new(".", Category::TooManyFiles).into());
     }
     let mut total_bytes = 0_u64;
+    let mut verified = Vec::new();
     for file in files {
-        total_bytes =
-            total_bytes.saturating_add(lint_file(directory, &canonical_root, &file, text_mode)?);
+        let bytes = lint_file(directory, &canonical_root, &file, text_mode)?;
+        total_bytes = total_bytes.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
         if total_bytes > MAX_TOTAL_BYTES {
             return Err(LintError::new(".", Category::Oversized).into());
         }
+        if !bytes.is_empty() {
+            let digest = Sha256::digest(&bytes);
+            let mut sha256 = String::with_capacity(64);
+            for byte in digest {
+                let _ = write!(sha256, "{byte:02x}");
+            }
+            verified.push(VerifiedEvidence { bytes, sha256 });
+        }
     }
-    Ok(())
+    Ok(verified)
 }
 
 /// Validates the documented desktop preview threshold from parsed `Evidence`,
@@ -287,10 +310,10 @@ fn collect_regular_files(
     Ok(())
 }
 
-fn lint_file(root: &Path, canonical_root: &Path, file: &Path, text_mode: bool) -> Result<u64> {
+fn lint_file(root: &Path, canonical_root: &Path, file: &Path, text_mode: bool) -> Result<Vec<u8>> {
     let relative = relative(root, file);
     if !text_mode && relative == Path::new(".gitkeep") {
-        return Ok(0);
+        return Ok(Vec::new());
     }
     if unsafe_name(&relative) {
         return Err(LintError::new(&relative, Category::UnsafeName).into());
@@ -349,12 +372,13 @@ fn lint_file(root: &Path, canonical_root: &Path, file: &Path, text_mode: bool) -
         .map_err(|_| LintError::new(&relative, Category::BinaryOrInvalidText))?;
     if text_mode {
         scan_text(contents).map_err(|category| LintError::new(relative, category))?;
-        return Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        return Ok(bytes);
     }
     parse_and_scan_json(contents).map_err(|category| LintError::new(&relative, category))?;
-    Evidence::from_json(contents)
-        .map_err(|_| LintError::new(relative, Category::InvalidEvidence))?;
-    Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+    if Evidence::from_json(contents).is_err() && PhaseZeroProof::from_json(contents).is_err() {
+        return Err(LintError::new(relative, Category::InvalidEvidence).into());
+    }
+    Ok(bytes)
 }
 
 fn read_bounded<R: Read>(mut reader: R) -> std::io::Result<Vec<u8>> {

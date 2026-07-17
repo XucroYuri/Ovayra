@@ -1,21 +1,12 @@
-use std::{
-    fmt::Write as _,
-    fs,
-    io::Write as _,
-    path::{Path, PathBuf},
-};
+use std::{fmt::Write as _, fs, io::Write as _, path::Path};
 
 use anyhow::Result;
-use sha2::{Digest, Sha256};
-use spike_contracts::{Evidence, PhaseZeroMatrix};
+use spike_contracts::{PhaseZeroMatrix, PhaseZeroProof};
 
 use crate::evidence_lint;
 
-const MAX_GATE_FILES: usize = 1_024;
-const MAX_GATE_DEPTH: usize = 32;
-
 struct SourceEvidence {
-    evidence: Evidence,
+    proof: PhaseZeroProof,
     sha256: String,
 }
 
@@ -25,22 +16,32 @@ pub(crate) fn run(evidence_dir: &Path, matrix_path: &Path, report_path: &Path) -
     let Ok(matrix) = PhaseZeroMatrix::load(matrix_path) else {
         return reject(report_path, "FAIL", "matrix validation failed", &[]);
     };
-    if evidence_lint::lint_dir_quiet(evidence_dir, false).is_err() {
+    let Ok(verified) = evidence_lint::lint_verified(evidence_dir, false) else {
         return reject(
             report_path,
             "FAIL",
             "evidence lint rejected one or more bounded entries",
             &[],
         );
-    }
-    let Ok(sources) = read_sources(evidence_dir) else {
-        return reject(report_path, "FAIL", "evidence source read failed", &[]);
     };
-    let reports = sources
+    let Ok(sources) = verified
+        .into_iter()
+        .map(|verified| {
+            let contents = std::str::from_utf8(&verified.bytes).map_err(anyhow::Error::from)?;
+            Ok(SourceEvidence {
+                proof: PhaseZeroProof::from_json(contents)?,
+                sha256: verified.sha256,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+    else {
+        return reject(report_path, "FAIL", "typed proof parse failed", &[]);
+    };
+    let proofs = sources
         .iter()
-        .map(|source| source.evidence.clone())
+        .map(|source| source.proof.clone())
         .collect::<Vec<_>>();
-    match matrix.evaluate(&reports) {
+    match matrix.evaluate_proofs(&proofs) {
         Ok(()) => {
             write_report_atomic(report_path, &render_pass_report(&matrix, &sources))?;
             println!("PHASE_0_GATE=PASS");
@@ -66,63 +67,6 @@ fn reject(
         eprintln!("PHASE_0_GATE=FAIL");
     }
     anyhow::bail!("phase 0 gate did not accept evidence")
-}
-
-fn read_sources(root: &Path) -> Result<Vec<SourceEvidence>> {
-    let mut paths = Vec::new();
-    collect_json_files(root, root, 0, &mut paths)?;
-    paths.sort();
-    paths
-        .into_iter()
-        .filter(|path| path.file_name().is_none_or(|name| name != ".gitkeep"))
-        .map(|path| {
-            let bytes = fs::read(path)?;
-            let contents = std::str::from_utf8(&bytes)?;
-            Ok(SourceEvidence {
-                evidence: Evidence::from_json(contents)?,
-                sha256: hex_sha256(&bytes),
-            })
-        })
-        .collect()
-}
-
-fn collect_json_files(
-    root: &Path,
-    current: &Path,
-    depth: usize,
-    paths: &mut Vec<PathBuf>,
-) -> Result<()> {
-    if depth > MAX_GATE_DEPTH || paths.len() > MAX_GATE_FILES {
-        anyhow::bail!("bounded evidence traversal rejected")
-    }
-    let metadata = fs::symlink_metadata(current)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        anyhow::bail!("bounded evidence traversal rejected")
-    }
-    for entry in fs::read_dir(current)? {
-        let entry = entry?;
-        let path = entry.path();
-        if current == root && path.file_name().is_some_and(|name| name == ".gitkeep") {
-            continue;
-        }
-        let metadata = fs::symlink_metadata(&path)?;
-        if metadata.file_type().is_symlink() {
-            anyhow::bail!("bounded evidence traversal rejected")
-        }
-        if metadata.is_dir() {
-            collect_json_files(root, &path, depth + 1, paths)?;
-        } else if metadata.is_file()
-            && path.extension().and_then(|extension| extension.to_str()) == Some("json")
-        {
-            if !path.starts_with(root) {
-                anyhow::bail!("bounded evidence traversal rejected")
-            }
-            paths.push(path);
-        } else {
-            anyhow::bail!("bounded evidence traversal rejected")
-        }
-    }
-    Ok(())
 }
 
 fn render_pass_report(matrix: &PhaseZeroMatrix, sources: &[SourceEvidence]) -> String {
@@ -186,13 +130,4 @@ fn write_report_atomic(destination: &Path, contents: &str) -> Result<()> {
     #[cfg(unix)]
     fs::File::open(parent)?.sync_all()?;
     Ok(())
-}
-
-fn hex_sha256(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(64);
-    for byte in digest {
-        let _ = write!(output, "{byte:02x}");
-    }
-    output
 }

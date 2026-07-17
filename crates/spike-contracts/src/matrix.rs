@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, fs, path::Path};
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::{Evidence, SpikeId, TargetId, Verdict};
+use crate::{Evidence, PhaseZeroProof, ProofComponent, ProofPayload, SpikeId, TargetId, Verdict};
 
 const CANONICAL_REQUIRED: &[(&str, &str, Option<&str>, Option<&str>)] = &[
     ("preview", "macos-arm64-vt", Some("aqua"), None),
@@ -93,6 +93,10 @@ pub enum MatrixError {
     WrongBackend,
     #[error("required evidence is missing or violates {0}")]
     Requirement(String),
+    #[error("matrix rows must be in the canonical Phase 0 order")]
+    CanonicalOrder,
+    #[error("duplicate proof component for a required matrix row")]
+    DuplicateProofComponent,
 }
 
 impl PhaseZeroMatrix {
@@ -178,6 +182,51 @@ impl PhaseZeroMatrix {
         Ok(())
     }
 
+    /// Evaluates only schema-v2 tagged proof components. Generic measurements
+    /// are intentionally outside this API and cannot satisfy acceptance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a deterministic error for an unmatched, duplicate, missing, or
+    /// threshold-violating required proof component.
+    pub fn evaluate_proofs(&self, proofs: &[PhaseZeroProof]) -> Result<(), MatrixError> {
+        let mut seen = BTreeSet::new();
+        for proof in proofs {
+            let required = self
+                .required
+                .iter()
+                .find(|required| {
+                    required.id == proof.row.spike
+                        && required.target == proof.row.target
+                        && required.session == proof.row.session
+                        && required.backend == proof.row.backend
+                })
+                .ok_or(MatrixError::UnmatchedEvidence)?;
+            let component = proof.component.as_str();
+            let key = format!("{}|{component}", required_key(required));
+            if !seen.insert(key) {
+                return Err(MatrixError::DuplicateProofComponent);
+            }
+            validate_typed_proof(required, proof)?;
+        }
+        for required in &self.required {
+            for component in required_components(required) {
+                if !seen.contains(&format!(
+                    "{}|{}",
+                    required_key(required),
+                    component.as_str()
+                )) {
+                    return Err(MatrixError::MissingEvidence(format!(
+                        "{}|{}",
+                        required_key(required),
+                        component.as_str()
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn match_report<'a>(&'a self, report: &Evidence) -> Result<&'a RequiredEvidence, MatrixError> {
         let measurements = report.measurements();
         let requested_backend = measurement_str(measurements, "requested_backend");
@@ -232,21 +281,171 @@ impl PhaseZeroMatrix {
         let expected = CANONICAL_REQUIRED
             .iter()
             .map(|(id, target, session, backend)| matrix_key(id, target, *session, *backend))
-            .collect::<BTreeSet<_>>();
-        let actual = self
-            .required
-            .iter()
-            .map(required_key)
-            .collect::<BTreeSet<_>>();
-        let missing = expected.difference(&actual).cloned().collect::<Vec<_>>();
+            .collect::<Vec<_>>();
+        let actual = self.required.iter().map(required_key).collect::<Vec<_>>();
+        let expected_set = expected.iter().cloned().collect::<BTreeSet<_>>();
+        let actual_set = actual.iter().cloned().collect::<BTreeSet<_>>();
+        let missing = expected_set
+            .difference(&actual_set)
+            .cloned()
+            .collect::<Vec<_>>();
         if !missing.is_empty() {
             return Err(MatrixError::MissingRequiredEntries(missing));
         }
-        let unsupported = actual.difference(&expected).cloned().collect::<Vec<_>>();
+        let unsupported = actual_set
+            .difference(&expected_set)
+            .cloned()
+            .collect::<Vec<_>>();
         if !unsupported.is_empty() {
             return Err(MatrixError::UnsupportedRequiredEntries(unsupported));
         }
+        if actual != expected {
+            return Err(MatrixError::CanonicalOrder);
+        }
         Ok(())
+    }
+}
+
+fn required_components(required: &RequiredEvidence) -> &'static [ProofComponent] {
+    match required.id {
+        SpikeId::Preview => &[ProofComponent::Preview],
+        SpikeId::Media if required.backend.as_deref() == Some("cpu-fallback") => {
+            &[ProofComponent::MediaCpu]
+        }
+        SpikeId::Media => &[
+            ProofComponent::MediaHardware,
+            ProofComponent::MediaForcedFallback,
+        ],
+        SpikeId::Gemini => &[ProofComponent::GeminiStage, ProofComponent::GeminiResume],
+        SpikeId::Platform => &[
+            ProofComponent::PlatformKeyring,
+            ProofComponent::PlatformTray,
+            ProofComponent::PlatformNoTray,
+            ProofComponent::PlatformProcess,
+            ProofComponent::PlatformCheckpoint,
+        ],
+        SpikeId::Distribution => &[
+            ProofComponent::DistributionFfmpeg,
+            ProofComponent::DistributionPackage,
+            ProofComponent::DistributionUpdate,
+        ],
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn validate_typed_proof(
+    required: &RequiredEvidence,
+    proof: &PhaseZeroProof,
+) -> Result<(), MatrixError> {
+    let ok = match (&proof.component, &proof.proof) {
+        (ProofComponent::Preview, ProofPayload::Preview(value)) => {
+            value.requested_duration_ms == 120_000
+                && value.measured_duration_ms >= 120_000
+                && (23_000..=25_000).contains(&value.milli_fps)
+                && value.p95_ms <= 100
+                && value.rss_growth_mib <= 64
+                && value.frames_read > 0
+                && value.frames_applied > 0
+                && value.frames_applied + value.frames_dropped <= value.frames_read
+                && value.hidden
+                && value.restored
+                && value.event_loop_errors == 0
+                && value.stream_errors == 0
+                && !value.renderer.is_empty()
+        }
+        (ProofComponent::MediaCpu, ProofPayload::MediaCpu(value)) => {
+            value.actual_backend == "cpu"
+                && value.output_duration_seconds >= 10
+                && value.video_codec == "vp9"
+                && value.audio_codec == "opus"
+                && value.progress_complete
+                && sha256(Some(&value.output_sha256))
+        }
+        (ProofComponent::MediaHardware, ProofPayload::MediaHardware(value)) => {
+            required.backend.as_deref() == Some(value.requested_backend.as_str())
+                && value.actual_backend == value.requested_backend
+                && value.output_duration_seconds >= 10
+                && sha256(Some(&value.output_sha256))
+        }
+        (ProofComponent::MediaForcedFallback, ProofPayload::MediaForcedFallback(value)) => {
+            required.backend.as_deref() == Some(value.requested_backend.as_str())
+                && value.cpu_restarts == 1
+                && value.session_quarantined
+                && value.video_codec == "vp9"
+                && value.audio_codec == "opus"
+                && sha256(Some(&value.output_sha256))
+        }
+        (ProofComponent::GeminiStage, ProofPayload::GeminiStage(value)) => {
+            !value.checkpoint_id.is_empty()
+                && value.staged_offset > 0
+                && value.server_offset == value.staged_offset
+                && value.retry_policy_observed
+        }
+        (ProofComponent::GeminiResume, ProofPayload::GeminiResume(value)) => {
+            !value.checkpoint_id.is_empty()
+                && value.resumed_offset > 0
+                && value.server_offset >= value.resumed_offset
+                && value.server_authoritative
+                && value.remote_state == "ACTIVE"
+                && value.analysis_nonempty
+                && value.model == "gemini-3.1-flash-lite"
+                && value.http_status == 200
+                && value.remote_deleted
+                && value.checkpoint_deleted
+                && value.retry_policy_observed
+        }
+        (ProofComponent::PlatformKeyring, ProofPayload::PlatformKeyring(value)) => {
+            value.set_ok && value.get_ok && value.delete_ok && value.missing_after_delete
+        }
+        (ProofComponent::PlatformTray, ProofPayload::PlatformTray(value)) => {
+            value.hidden && value.restored && value.quit
+        }
+        (ProofComponent::PlatformNoTray, ProofPayload::PlatformNoTray(value)) => {
+            value.accessible && value.warning_shown && value.quit
+        }
+        (ProofComponent::PlatformProcess, ProofPayload::PlatformProcess(value)) => {
+            value.parent_dead && value.grandchild_dead && value.elapsed_ms <= 5_000
+        }
+        (ProofComponent::PlatformCheckpoint, ProofPayload::PlatformCheckpoint(value)) => {
+            value.encrypted && value.plaintext_absent
+        }
+        (ProofComponent::DistributionFfmpeg, ProofPayload::DistributionFfmpeg(value)) => {
+            value.immutable_lock
+                && value.source_signature
+                && value.sbom
+                && value.reproducible
+                && value.lgpl_only
+                && value.source_correspondence
+        }
+        (ProofComponent::DistributionPackage, ProofPayload::DistributionPackage(value)) => {
+            expected_formats(required.target.as_str()).is_some_and(|expected| {
+                expected
+                    .iter()
+                    .all(|format| value.formats.iter().any(|actual| actual == format))
+            }) && (required.target.as_str() != "macos-arm64-vt" || value.notarized == Some(true))
+                && value.platform_signature
+        }
+        (ProofComponent::DistributionUpdate, ProofPayload::DistributionUpdate(value)) => {
+            value.manifest_signed && value.one_byte_tamper_rejected
+        }
+        _ => false,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(MatrixError::Requirement(format!(
+            "typed {} proof",
+            proof.component.as_str()
+        )))
+    }
+}
+
+fn expected_formats(target: &str) -> Option<&'static [&'static str]> {
+    match target {
+        "macos-arm64-vt" => Some(&["app", "dmg"]),
+        "windows-x64-mf" => Some(&["msi"]),
+        "linux-x64-vaapi-wayland" => Some(&["appimage", "deb"]),
+        _ => None,
     }
 }
 

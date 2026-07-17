@@ -2,7 +2,7 @@
 
 Status: NO-GO
 
-Gate result: missing required evidence: preview|macos-arm64-vt|aqua|
+Gate result: missing required evidence: preview|macos-arm64-vt|aqua||preview
 
 Locally proven controls: frozen matrix validation, strict evidence schema, bounded redaction lint, and deterministic gate evaluation.
 

@@ -2,7 +2,7 @@
 
 Phase 0 is experimental feasibility work, not a production interface commitment.
 
-`packaging/phase-0-matrix.toml` defines the real-device evidence that must pass before the Phase 0 gate can succeed. Each JSON record belongs in `evidence/`, uses schema version 1, and must be redacted: never record credentials, upload URLs, prompts, model results, media paths, or file names.
+`packaging/phase-0-matrix.toml` defines the real-device evidence that must pass before the Phase 0 gate can succeed. Producer diagnostics may use the redacted schema-version-1 `Evidence` record, but gate input is only schema-version-2 `PhaseZeroProof`: a strict tagged component record with a bound matrix row. Generic diagnostic measurements never satisfy acceptance. Every record must be redacted: never record credentials, upload URLs, prompts, model results, media paths, or file names.
 
 Required records must finish with `pass`. `conditional` and `skipped` are not valid outcomes for required real-device evidence. The matrix deliberately includes only the supported macOS Apple Silicon, Windows x86-64, and glibc Linux desktop targets described by the approved design.
 
@@ -33,8 +33,10 @@ cargo run --locked -p ovayra-spike -- evidence lint --dir docs/phase-0/evidence
 cargo run --locked -p ovayra-spike -- gate --evidence-dir docs/phase-0/evidence --matrix packaging/phase-0-matrix.toml --report docs/phase-0/feasibility-report.md
 ```
 
-The final command is fail-closed. It invokes the evidence linter before parsing
-the strict schema, maps every record one-to-one to the frozen 33-row matrix,
+The final command is fail-closed. It obtains bounded bytes and SHA-256 values
+from the linter's verified file handles before parsing the strict schema; it
+never rereads evidence by pathname. It maps every typed component to the frozen
+ordered 33-row matrix,
 and validates the preview, media, Gemini, platform, and distribution thresholds.
 It writes an atomic deterministic report containing only source JSON hashes;
 source names and evidence contents are never echoed. `PHASE_0_GATE=PASS` is the

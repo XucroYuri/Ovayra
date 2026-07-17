@@ -117,6 +117,27 @@ fn parses_required_evidence_with_optional_qualifiers() {
 }
 
 #[test]
+fn matrix_rejects_a_reordered_but_otherwise_complete_canonical_set() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packaging/phase-0-matrix.toml"),
+    )
+    .unwrap();
+    let mut blocks = source.split("[[required]]").collect::<Vec<_>>();
+    let header = blocks.remove(0);
+    blocks.swap(0, 1);
+    let mut reordered = format!("{header}[[required]]{}[[required]]{}", blocks[0], blocks[1]);
+    for block in &blocks[2..] {
+        use std::fmt::Write as _;
+        let _ = write!(reordered, "[[required]]{block}");
+    }
+    assert!(matches!(
+        PhaseZeroMatrix::from_toml(&reordered),
+        Err(MatrixError::CanonicalOrder)
+    ));
+}
+
+#[test]
 fn matrix_rejects_unknown_fields_duplicates_empty_qualifiers_and_unsupported_targets() {
     for invalid in [
         r#"[[required]]
