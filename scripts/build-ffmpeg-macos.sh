@@ -23,7 +23,7 @@ cd "$source_root/libvpx"; ./configure --prefix="$dependency_prefix" --disable-ex
 cd "$source_root/opus"; ./configure --prefix="$dependency_prefix" --disable-doc; make -j"$parallelism"; make check; make install
 cd "$source_root/ffmpeg"
 configure=(--prefix="$stage_root" --disable-autodetect --disable-debug --disable-doc --disable-ffplay --disable-network --enable-ffmpeg --enable-ffprobe --enable-libopus --enable-libvpx --enable-version3 --disable-gpl --disable-nonfree --enable-videotoolbox --enable-audiotoolbox --extra-cflags="-I$dependency_prefix/include" --extra-ldflags="-L$dependency_prefix/lib")
-printf 'configuration: '; printf '%q ' "${configure[@]}"; printf '\n' > "$stage_root/provenance/buildconf.txt"
+{ printf 'configuration: '; printf '%q ' "${configure[@]}"; printf '\n'; } > "$stage_root/provenance/buildconf.txt"
 PKG_CONFIG_PATH="$dependency_prefix/lib/pkgconfig" ./configure "${configure[@]}"; make -j"$parallelism"
 fate_targets=$(make fate-list | grep -E '^fate-(lavf-matroska|vp9|opus)' | head -n 3 || true); [[ -n "$fate_targets" ]] || { echo 'required FATE smoke targets unavailable' >&2; exit 66; }; set -- $fate_targets; make "$@"; make install
 cp "$source_root/ffmpeg-8.1.2.tar.xz" "$source_root/ffmpeg-8.1.2.tar.xz.asc" "$stage_root/provenance/"

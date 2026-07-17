@@ -127,6 +127,8 @@ mod child_processes {
                 "-hide_banner",
                 "-nostdin",
                 "-re",
+                "-stream_loop",
+                "-1",
                 "-i",
                 "target/phase-0/fallback.webm",
                 "-an",

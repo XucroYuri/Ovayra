@@ -187,25 +187,32 @@ impl FfmpegPreview {
     /// The fixed command line used for preview decoding.
     #[must_use]
     pub fn arguments(&self, input: &Path) -> Vec<OsString> {
-        ["-hide_banner", "-nostdin", "-re", "-i"]
+        [
+            "-hide_banner",
+            "-nostdin",
+            "-re",
+            "-stream_loop",
+            "-1",
+            "-i",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .chain(std::iter::once(input.as_os_str().to_os_string()))
+        .chain(
+            [
+                "-an",
+                "-vf",
+                "scale=640:360,fps=24",
+                "-pix_fmt",
+                "rgba",
+                "-f",
+                "rawvideo",
+                "pipe:1",
+            ]
             .into_iter()
-            .map(OsString::from)
-            .chain(std::iter::once(input.as_os_str().to_os_string()))
-            .chain(
-                [
-                    "-an",
-                    "-vf",
-                    "scale=640:360,fps=24",
-                    "-pix_fmt",
-                    "rgba",
-                    "-f",
-                    "rawvideo",
-                    "pipe:1",
-                ]
-                .into_iter()
-                .map(OsString::from),
-            )
-            .collect()
+            .map(OsString::from),
+        )
+        .collect()
     }
 
     /// Streams frames to the one-slot transport.

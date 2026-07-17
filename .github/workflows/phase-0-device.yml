@@ -119,9 +119,10 @@ jobs:
           bundle="$(dirname "$(dirname "$OVAYRA_FFMPEG")")"
           cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$bundle" --evidence "target/phase-0/bundle-$OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --output target/phase-0/fallback.webm --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-cpu.json"
+          "$OVAYRA_FFMPEG" -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine=frequency=1000:sample_rate=48000 -t 10 -c:v libx264 -pix_fmt yuv420p -c:a aac target/phase-0/synthetic-h264-aac.mp4
           render=(); if [ "$OVAYRA_BACKEND" = vaapi ]; then test -e /dev/dri/renderD128; render=(--render-device /dev/dri/renderD128); fi
-          cargo run --locked -p ovayra-spike -- media self-test --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --input target/phase-0/fallback.webm --output target/phase-0/hardware.mp4 "${render[@]}" --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-hardware.json"
-          cargo run --locked -p ovayra-spike -- media forced-fallback --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --input target/phase-0/fallback.webm --output target/phase-0/forced-fallback.webm --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-forced.json"
+          cargo run --locked -p ovayra-spike -- media self-test --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --input target/phase-0/synthetic-h264-aac.mp4 --output target/phase-0/hardware.mp4 "${render[@]}" --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-hardware.json"
+          cargo run --locked -p ovayra-spike -- media forced-fallback --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --input target/phase-0/synthetic-h264-aac.mp4 --output target/phase-0/forced-fallback.webm --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-forced.json"
       - name: Validate bundle, CPU fallback, hardware and forced fallback (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -129,8 +130,9 @@ jobs:
           $ErrorActionPreference = 'Stop'; $bundle = Split-Path (Split-Path $env:OVAYRA_FFMPEG -Parent) -Parent
           cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle $bundle --evidence "target/phase-0/bundle-$env:OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg $env:OVAYRA_FFMPEG --ffprobe $env:OVAYRA_FFPROBE --output target/phase-0/fallback.webm --evidence "docs/phase-0/evidence/media-$env:OVAYRA_TARGET_ID-cpu.json"
-          cargo run --locked -p ovayra-spike -- media self-test --backend $env:OVAYRA_BACKEND --ffmpeg $env:OVAYRA_FFMPEG --ffprobe $env:OVAYRA_FFPROBE --input target/phase-0/fallback.webm --output target/phase-0/hardware.mp4 --evidence "docs/phase-0/evidence/media-$env:OVAYRA_TARGET_ID-hardware.json"
-          cargo run --locked -p ovayra-spike -- media forced-fallback --backend $env:OVAYRA_BACKEND --ffmpeg $env:OVAYRA_FFMPEG --ffprobe $env:OVAYRA_FFPROBE --input target/phase-0/fallback.webm --output target/phase-0/forced-fallback.webm --evidence "docs/phase-0/evidence/media-$env:OVAYRA_TARGET_ID-forced.json"
+          & $env:OVAYRA_FFMPEG -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine=frequency=1000:sample_rate=48000 -t 10 -c:v libx264 -pix_fmt yuv420p -c:a aac target/phase-0/synthetic-h264-aac.mp4
+          cargo run --locked -p ovayra-spike -- media self-test --backend $env:OVAYRA_BACKEND --ffmpeg $env:OVAYRA_FFMPEG --ffprobe $env:OVAYRA_FFPROBE --input target/phase-0/synthetic-h264-aac.mp4 --output target/phase-0/hardware.mp4 --evidence "docs/phase-0/evidence/media-$env:OVAYRA_TARGET_ID-hardware.json"
+          cargo run --locked -p ovayra-spike -- media forced-fallback --backend $env:OVAYRA_BACKEND --ffmpeg $env:OVAYRA_FFMPEG --ffprobe $env:OVAYRA_FFPROBE --input target/phase-0/synthetic-h264-aac.mp4 --output target/phase-0/forced-fallback.webm --evidence "docs/phase-0/evidence/media-$env:OVAYRA_TARGET_ID-forced.json"
       - name: Run the exact 120-second preview and typed threshold gate (POSIX)
         if: runner.os != 'Windows'
         shell: bash
@@ -186,7 +188,10 @@ jobs:
         include:
           - { target_id: macos-arm64-vt, labels: '["self-hosted","ovayra","macos-arm64-vt","aqua"]' }
           - { target_id: windows-x64-mf, labels: '["self-hosted","ovayra","windows-x64-mf","desktop"]' }
+          - { target_id: windows-x64-nvidia, labels: '["self-hosted","ovayra","windows-x64-nvidia","desktop"]' }
           - { target_id: linux-x64-vaapi-wayland, labels: '["self-hosted","ovayra","linux-x64-vaapi-wayland","wayland"]' }
+          - { target_id: linux-x64-vaapi-x11, labels: '["self-hosted","ovayra","linux-x64-vaapi-x11","x11"]' }
+          - { target_id: linux-x64-nvidia, labels: '["self-hosted","ovayra","linux-x64-nvidia","desktop"]' }
     env:
       OVAYRA_TARGET_ID: ${{ matrix.target_id }}
       OVAYRA_GEMINI_API_KEY: ${{ secrets.OVAYRA_GEMINI_API_KEY }}
