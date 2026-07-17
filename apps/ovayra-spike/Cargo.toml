@@ -1,0 +1,29 @@
+[package]
+name = "ovayra-spike"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+icns.workspace = true
+ico.workspace = true
+png.workspace = true
+resvg.workspace = true
+slint.workspace = true
+spike-contracts = { path = "../../crates/spike-contracts" }
+spike-gemini = { path = "../../crates/spike-gemini" }
+spike-media = { path = "../../crates/spike-media" }
+spike-platform = { path = "../../crates/spike-platform" }
+spike-release = { path = "../../crates/spike-release" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
+
+[lints]
+workspace = true
