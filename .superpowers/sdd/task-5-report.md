@@ -47,3 +47,11 @@ Inventory now uses an exact no-common-argument path with a strict 64 KiB stdout 
 Hardware execution preflights the complete inventory and maps collection/component failure to
 `probe_failed`. Forced fallback adds a backend device sentinel and an unknown FFmpeg option so a
 driver that ignores device selection still fails closed before CPU is permitted.
+
+## Second review-fix GREEN
+
+Ordinary self-test now checks the policy's scheduled backend before spawning and rejects a
+quarantined backend rather than silently using CPU. Forced fallback likewise requires a hardware
+attempt, then uses a separate no-preflight forced attempt so the deliberate invalid command is
+actually spawned. Normal attempts retain preflight. The hardware command builder was simplified
+so VAAPI emits one device pair only, and normal runner stdout is capped while excess is drained.

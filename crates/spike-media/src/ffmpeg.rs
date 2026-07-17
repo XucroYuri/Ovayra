@@ -171,8 +171,14 @@ impl FfmpegRunner {
             .kill_on_drop(true)
             .spawn()
             .map_err(FfmpegError::Spawn)?;
-        let stdout = child.stdout.take().ok_or(FfmpegError::MissingOutputPipe)?;
-        let stderr = child.stderr.take().ok_or(FfmpegError::MissingOutputPipe)?;
+        let Some(stdout) = child.stdout.take() else {
+            terminate_and_reap(&mut child).await;
+            return Err(FfmpegError::MissingOutputPipe);
+        };
+        let Some(stderr) = child.stderr.take() else {
+            terminate_and_reap(&mut child).await;
+            return Err(FfmpegError::MissingOutputPipe);
+        };
         let joined = Box::pin(tokio::time::timeout(Duration::from_secs(5), async {
             tokio::try_join!(
                 read_capped(stdout, INVENTORY_STDOUT_LIMIT),
@@ -216,10 +222,10 @@ async fn terminate_and_reap(child: &mut tokio::process::Child) {
     let _ = child.wait().await;
 }
 
-async fn read_all(mut reader: impl AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    reader.read_to_end(&mut bytes).await?;
-    Ok(bytes)
+async fn read_all(reader: impl AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
+    read_capped(reader, 1024 * 1024)
+        .await
+        .map_err(|_| std::io::Error::other("stdout capped"))
 }
 
 async fn read_capped(

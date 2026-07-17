@@ -162,7 +162,7 @@ impl ExecutionPolicy {
             actual_backend: None,
             downgrade_code: quarantined.then_some(DowngradeCode::HardwareQuarantined),
             downgrade_reason: None,
-            attempts_started: u8::from(!quarantined),
+            attempts_started: 1,
             hardware_quarantined: quarantined,
             process_wide_quarantine: use_global_quarantine,
         }
@@ -537,48 +537,31 @@ impl HardwarePlan {
         render_device: Option<&Path>,
     ) -> Vec<OsString> {
         let mut args = vec![OsString::from("-y")];
-        match self.backend {
-            Backend::Vaapi => {
-                args.push(OsString::from("-vaapi_device"));
-                args.push(
-                    render_device
-                        .unwrap_or_else(|| Path::new("/dev/dri/renderD128"))
-                        .as_os_str()
-                        .to_owned(),
-                );
-            }
-            Backend::VideoToolbox | Backend::D3d11vaMf | Backend::NvencNvdec => {
-                if let Some(device) = render_device {
-                    args.push(OsString::from("-hwaccel_device"));
-                    args.push(device.as_os_str().to_owned());
-                }
-            }
-            Backend::Cpu => panic!("CPU is a fallback output, not a hardware self-test plan"),
+        let device = render_device.unwrap_or_else(|| Path::new("/dev/dri/renderD128"));
+        if matches!(self.backend, Backend::Vaapi) {
+            args.extend([
+                OsString::from("-vaapi_device"),
+                device.as_os_str().to_owned(),
+            ]);
+        } else if !self.backend.is_cpu() && render_device.is_some() {
+            args.extend([
+                OsString::from("-hwaccel_device"),
+                device.as_os_str().to_owned(),
+            ]);
         }
         for argument in self.args.iter().copied() {
+            if matches!(
+                argument,
+                "-vaapi_device" | "/dev/dri/renderD128" | "-f" | "null" | "-"
+            ) {
+                continue;
+            }
             if argument == "synthetic-h264-aac.mp4" {
                 args.push(input.as_os_str().to_owned());
-            } else if argument != "-f" && argument != "null" && argument != "-" {
+            } else {
                 // The self-test fixture targets a null sink; the executable plan encodes output.
                 args.push(OsString::from(argument));
             }
-        }
-        args.retain(|argument| {
-            argument != "-vaapi_device" || !matches!(self.backend, Backend::Vaapi)
-        });
-        if matches!(self.backend, Backend::Vaapi) {
-            // Drop the static default device that belonged to the fixture plan.
-            args.retain(|argument| argument != "/dev/dri/renderD128");
-            args.splice(
-                1..1,
-                [
-                    OsString::from("-vaapi_device"),
-                    render_device
-                        .unwrap_or_else(|| Path::new("/dev/dri/renderD128"))
-                        .as_os_str()
-                        .to_owned(),
-                ],
-            );
         }
         args.push(OsString::from("-t"));
         args.push(OsString::from("10"));

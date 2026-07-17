@@ -102,6 +102,9 @@ fn self_test(
     let target = evidence_target()?;
     let started = Instant::now();
     let mut policy = ExecutionPolicy::prefer(backend);
+    if policy.next_backend() != Some(backend) {
+        anyhow::bail!("hardware backend is quarantined; ordinary self-test will not fall back")
+    }
     let outcome = run_hardware_attempt(backend, ffmpeg, ffprobe, input, output, render_device);
     let actual = match outcome {
         AttemptOutcome::Succeeded => policy.observe(AttemptOutcome::Succeeded)?,
@@ -135,8 +138,13 @@ fn forced_fallback(
     let target = evidence_target()?;
     let started = Instant::now();
     let mut policy = ExecutionPolicy::prefer(backend);
+    if policy.next_backend() != Some(backend) {
+        anyhow::bail!(
+            "hardware backend is quarantined; forced fallback requires a hardware attempt"
+        )
+    }
     let invalid_device = Path::new("__ovayra_definitely_invalid_hardware_device__");
-    let outcome = run_hardware_attempt(
+    let outcome = run_forced_hardware_attempt(
         backend,
         ffmpeg,
         ffprobe,
@@ -181,6 +189,37 @@ fn run_hardware_attempt(
     output: &Path,
     render_device: Option<&Path>,
 ) -> AttemptOutcome {
+    run_hardware_attempt_inner(backend, ffmpeg, ffprobe, input, output, render_device, true)
+}
+
+fn run_forced_hardware_attempt(
+    backend: Backend,
+    ffmpeg: &Path,
+    ffprobe: &Path,
+    input: &Path,
+    output: &Path,
+    render_device: Option<&Path>,
+) -> AttemptOutcome {
+    run_hardware_attempt_inner(
+        backend,
+        ffmpeg,
+        ffprobe,
+        input,
+        output,
+        render_device,
+        false,
+    )
+}
+
+fn run_hardware_attempt_inner(
+    backend: Backend,
+    ffmpeg: &Path,
+    ffprobe: &Path,
+    input: &Path,
+    output: &Path,
+    render_device: Option<&Path>,
+    preflight: bool,
+) -> AttemptOutcome {
     let plan = HardwarePlan::self_test(backend);
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -188,11 +227,13 @@ fn run_hardware_attempt(
     else {
         return AttemptOutcome::SpawnFailed;
     };
-    let Ok(inventory) = runtime.block_on(FfmpegRunner::new(ffmpeg).collect_inventory()) else {
-        return AttemptOutcome::ProbeFailed;
-    };
-    if !plan.is_available(&inventory, true, 1) {
-        return AttemptOutcome::ProbeFailed;
+    if preflight {
+        let Ok(inventory) = runtime.block_on(FfmpegRunner::new(ffmpeg).collect_inventory()) else {
+            return AttemptOutcome::ProbeFailed;
+        };
+        if !plan.is_available(&inventory, true, 1) {
+            return AttemptOutcome::ProbeFailed;
+        }
     }
     let command = runtime.block_on(FfmpegRunner::new(ffmpeg).run_os_with_timeout(
         plan.transcode_args(input, output, render_device),
