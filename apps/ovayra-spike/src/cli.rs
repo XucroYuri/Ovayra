@@ -21,6 +21,8 @@ pub(crate) enum Command {
         delay_report: bool,
         #[arg(long)]
         exit_before_report: bool,
+        #[arg(long)]
+        hold_stderr: bool,
     },
     #[command(hide = true)]
     ChildLeaf,

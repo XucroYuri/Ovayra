@@ -8,7 +8,7 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::{ChildStdout, Command},
     task::JoinHandle,
-    time::timeout,
+    time::{Instant, timeout, timeout_at},
 };
 
 const MAX_REPORT_BYTES: usize = 4 * 1024;
@@ -136,10 +136,11 @@ impl GroupedProcess {
     /// Returns an error when group termination, reaping, or bounded stderr collection fails, or
     /// when the timeout expires. The drop guard still requests termination on every error path.
     pub async fn kill_and_wait(&mut self, wait: Duration) -> Result<(), ProcessGroupError> {
+        let deadline = Instant::now() + wait;
         let Some(child) = self.child.as_mut() else {
             return Ok(());
         };
-        let result = timeout(wait, async {
+        let result = timeout_at(deadline, async {
             match child.kill().await {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
@@ -152,10 +153,16 @@ impl GroupedProcess {
         match result {
             Ok(Ok(())) => {
                 self.child.take();
-                self.collect_stderr().await
+                self.collect_stderr_until(deadline).await
             }
-            Ok(Err(error)) => Err(ProcessGroupError::Cleanup(error)),
-            Err(_) => Err(ProcessGroupError::CleanupTimeout),
+            Ok(Err(error)) => {
+                self.abort_stderr_capture();
+                Err(ProcessGroupError::Cleanup(error))
+            }
+            Err(_) => {
+                self.abort_stderr_capture();
+                Err(ProcessGroupError::CleanupTimeout)
+            }
         }
     }
 
@@ -177,30 +184,43 @@ impl GroupedProcess {
         }
     }
 
-    async fn collect_stderr(&mut self) -> Result<(), ProcessGroupError> {
-        let Some(capture) = self.stderr_capture.take() else {
+    async fn collect_stderr_until(&mut self, deadline: Instant) -> Result<(), ProcessGroupError> {
+        let Some(mut capture) = self.stderr_capture.take() else {
             return Ok(());
         };
-        let _ = capture
-            .await
-            .map_err(|error| {
-                ProcessGroupError::Stderr(io::Error::other(format!("stderr task failed: {error}")))
-            })?
-            .map_err(ProcessGroupError::Stderr)?;
-        Ok(())
+        if let Ok(result) = timeout_at(deadline, &mut capture).await {
+            let _ = result
+                .map_err(|error| {
+                    ProcessGroupError::Stderr(io::Error::other(format!(
+                        "stderr task failed: {error}"
+                    )))
+                })?
+                .map_err(ProcessGroupError::Stderr)?;
+            Ok(())
+        } else {
+            capture.abort();
+            let _ = capture.await;
+            Err(ProcessGroupError::CleanupTimeout)
+        }
+    }
+
+    fn abort_stderr_capture(&mut self) {
+        if let Some(capture) = self.stderr_capture.take() {
+            capture.abort();
+        }
     }
 }
 
 impl Drop for GroupedProcess {
     fn drop(&mut self) {
+        self.abort_stderr_capture();
         let Some(mut child) = self.child.take() else {
             return;
         };
-        if child.start_kill().is_err() {
-            return;
-        }
         // Drop cannot await. Keep the handle alive in a short-lived runtime so command-group
-        // reaps every child in the Unix group or Windows job object.
+        // reaps every child in the Unix group or Windows job object, even when the child had
+        // already exited before `start_kill` reports `InvalidInput`.
+        let _ = child.start_kill();
         let _ = std::thread::Builder::new()
             .name("ovayra-process-reaper".to_owned())
             .spawn(move || {

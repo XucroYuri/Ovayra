@@ -252,6 +252,7 @@ impl FrameBridge {
 #[allow(clippy::struct_excessive_bools)] // Evidence records each independently measured lifecycle transition.
 #[derive(Default)]
 struct TrayMetrics {
+    native_close_event: bool,
     close_callback: bool,
     hidden: bool,
     restore_callback: bool,
@@ -302,17 +303,6 @@ pub(crate) fn run_tray_lifecycle(
             }
             slint::CloseRequestResponse::HideWindow
         });
-        let close_window = window.as_weak();
-        let close_metrics = Arc::clone(&metrics);
-        window.on_close_to_tray(move || {
-            if let Some(window) = close_window.upgrade()
-                && window.hide().is_ok()
-                && let Ok(mut metrics) = close_metrics.lock()
-            {
-                metrics.close_callback = true;
-                metrics.hidden = true;
-            }
-        });
         let restore_window = window.as_weak();
         let restore_metrics = Arc::clone(&metrics);
         tray.on_restore(move || {
@@ -347,16 +337,6 @@ pub(crate) fn run_tray_lifecycle(
             }
             slint::CloseRequestResponse::KeepWindowShown
         });
-        let close_window = window.as_weak();
-        let close_metrics = Arc::clone(&metrics);
-        window.on_close_to_tray(move || {
-            if let Some(window) = close_window.upgrade()
-                && let Ok(mut metrics) = close_metrics.lock()
-            {
-                metrics.close_callback = true;
-                metrics.window_accessible = window.window().is_visible();
-            }
-        });
     }
 
     window
@@ -367,6 +347,7 @@ pub(crate) fn run_tray_lifecycle(
             &window.as_weak(),
             tray.as_ref().map(SpikeTray::as_weak),
             Arc::clone(&metrics),
+            unavailable_category,
         );
     }
     let event_loop = slint::run_event_loop_until_quit();
@@ -391,6 +372,7 @@ pub(crate) fn run_tray_lifecycle(
 
     let mut evidence = Evidence::new(SpikeId::Platform, target);
     evidence.measure("tray_status", unavailable_category.unwrap_or("available"))?;
+    evidence.measure("automation_native_close_event", metrics.native_close_event)?;
     evidence.measure("automation_close_callback", metrics.close_callback)?;
     evidence.measure("automation_hide", metrics.hidden)?;
     evidence.measure("automation_restore_callback", metrics.restore_callback)?;
@@ -421,13 +403,35 @@ fn schedule_tray_automation(
     window: &Weak<PreviewWindow>,
     tray: Option<Weak<SpikeTray>>,
     metrics: Arc<Mutex<TrayMetrics>>,
+    unavailable_category: Option<&'static str>,
 ) {
     let close_window = window.clone();
+    let close_metrics = Arc::clone(&metrics);
     slint::Timer::single_shot(Duration::from_millis(100), move || {
         if let Some(window) = close_window.upgrade() {
-            // This invokes the Slint button callback on the UI event loop. The native close
-            // callback remains installed above for real window-manager close requests.
-            window.invoke_close_to_tray();
+            let dispatched = window
+                .window()
+                .try_dispatch_event(slint::platform::WindowEvent::CloseRequested)
+                .is_ok();
+            if let Ok(mut metrics) = close_metrics.lock() {
+                metrics.native_close_event = dispatched;
+            }
+        }
+    });
+    let observe_window = window.clone();
+    let observe_metrics = Arc::clone(&metrics);
+    slint::Timer::single_shot(Duration::from_millis(175), move || {
+        if let Some(window) = observe_window.upgrade()
+            && let Ok(mut metrics) = observe_metrics.lock()
+        {
+            let visible = window.window().is_visible();
+            if let Some(category) = unavailable_category {
+                metrics.window_accessible = visible;
+                metrics.warning_visible = window.get_tray_warning() == TRAY_WARNING
+                    && window.get_status_text() == format!("Tray unavailable ({category})");
+            } else {
+                metrics.hidden = !visible;
+            }
         }
     });
     let quit_window = window.clone();
@@ -436,6 +440,15 @@ fn schedule_tray_automation(
         slint::Timer::single_shot(Duration::from_millis(250), move || {
             if let Some(tray) = restore_tray.upgrade() {
                 tray.invoke_restore();
+            }
+        });
+        let restored_window = window.clone();
+        let restored_metrics = Arc::clone(&metrics);
+        slint::Timer::single_shot(Duration::from_millis(350), move || {
+            if let Some(window) = restored_window.upgrade()
+                && let Ok(mut metrics) = restored_metrics.lock()
+            {
+                metrics.restored = window.window().is_visible();
             }
         });
         slint::Timer::single_shot(Duration::from_millis(500), move || {

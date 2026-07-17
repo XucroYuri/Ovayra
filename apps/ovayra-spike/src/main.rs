@@ -39,7 +39,13 @@ fn main() -> Result<()> {
             malformed_report,
             delay_report,
             exit_before_report,
-        } => child_tree::run_child_tree(malformed_report, delay_report, exit_before_report)?,
+            hold_stderr,
+        } => child_tree::run_child_tree(child_tree::ChildTreeOptions {
+            malformed_report,
+            delay_report,
+            exit_before_report,
+            hold_stderr,
+        })?,
         Command::ChildLeaf => child_tree::run_child_leaf(),
         Command::Preview {
             ffmpeg,

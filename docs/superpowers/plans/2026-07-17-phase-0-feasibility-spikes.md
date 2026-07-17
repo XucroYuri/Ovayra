@@ -1303,6 +1303,10 @@ git add crates/spike-platform apps/ovayra-spike
 git commit -m "feat: validate desktop lifecycle and process cancellation"
 ```
 
+Review remediation (2026-07-17): native close-request dispatch and post-event visibility are
+covered by macOS integration tests; direct drop, already-exited drop, and held-stderr deadline
+cleanup are covered by process-group integration tests.
+
 ---
 
 ### Task 10: Build and Verify the LGPL-Only FFmpeg Provenance Chain
