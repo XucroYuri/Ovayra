@@ -160,16 +160,10 @@ async fn read_stderr_capped(mut reader: impl AsyncRead + Unpin) -> std::io::Resu
 }
 
 fn redact_stderr(stderr: &[u8]) -> Vec<u8> {
-    // Hash only a conservative normalized representation, never retain raw diagnostics.
+    // Diagnostics commonly contain paths, URLs, and user names; retain only line count.
     String::from_utf8_lossy(stderr)
         .lines()
-        .map(|line| {
-            if line.contains('/') || line.contains('\\') {
-                "[redacted-path]"
-            } else {
-                line
-            }
-        })
+        .map(|_| "[redacted-diagnostic]")
         .collect::<Vec<_>>()
         .join("\n")
         .into_bytes()
@@ -230,10 +224,99 @@ mod tests {
     #[test]
     fn stderr_is_redacted_before_its_evidence_hash_is_computed() {
         let redacted = redact_stderr(b"ordinary diagnostic\n/path/that/must/not/escape\n");
-        assert_eq!(redacted, b"ordinary diagnostic\n[redacted-path]");
+        assert_eq!(redacted, b"[redacted-diagnostic]\n[redacted-diagnostic]");
         assert_ne!(
             Sha256::digest(&redacted),
             Sha256::digest(b"ordinary diagnostic\n/path/that/must/not/escape\n")
         );
+    }
+
+    #[test]
+    fn stderr_redaction_removes_private_names_paths_and_urls_before_hashing() {
+        let first = redact_stderr(b"private-video.mp4: No such file\n'https://example.test/a?token=one'\nC:\\Users\\me\\secret.mov\n~/hidden.wav\n");
+        let second = redact_stderr(b"other-video.mp4: No such file\n'https://example.test/a?token=two'\nD:\\Users\\you\\other.mov\n~/different.wav\n");
+        for forbidden in [
+            b"private-video.mp4".as_slice(),
+            b"example.test",
+            b"token=one",
+            b"C:\\Users",
+            b"hidden.wav",
+        ] {
+            assert!(
+                !first
+                    .windows(forbidden.len())
+                    .any(|window| window == forbidden)
+            );
+        }
+        assert_eq!(first, second);
+    }
+
+    #[cfg(unix)]
+    fn script(
+        log: &std::path::Path,
+        fail_decoders: bool,
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("fake-ffmpeg");
+        let failure = if fail_decoders { "exit 7" } else { "exit 0" };
+        fs::write(
+            &executable,
+            format!("#!/bin/sh\nprintf '%s ' \"$@\" >> {}\nprintf '\\n' >> {}\nlast=\"\"\nfor value in \"$@\"; do last=\"$value\"; done\nprintf 'stdout:%s\\n' \"$last\"\nprintf 'private-video.mp4\\n' >&2\nif [ \"$last\" = \"-decoders\" ]; then {}; fi\nif [ \"$last\" = \"--emit-large\" ]; then dd if=/dev/zero bs=1024 count=1100 1>&2 2>/dev/null; fi\n", log.display(), log.display(), failure),
+        ).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        (directory, executable)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn runner_child_process_keeps_streams_separate_and_collects_all_inventory_commands() {
+        use std::fs;
+
+        let log_directory = tempfile::tempdir().unwrap();
+        let log = log_directory.path().join("arguments.log");
+        let (_script_directory, executable) = script(&log, false);
+        let runner = super::FfmpegRunner::new(executable);
+        let (stdout, evidence) = runner.run(&["--emit-large"]).await.unwrap();
+        assert_eq!(stdout, b"stdout:--emit-large\n");
+        assert_eq!(evidence.exit_code, Some(0));
+        assert_eq!(evidence.stderr_sha256.len(), 64);
+        runner.collect_inventory().await.unwrap();
+
+        let log_contents = fs::read_to_string(log).unwrap();
+        let lines: Vec<_> = log_contents.lines().collect();
+        assert_eq!(
+            lines[0],
+            "-hide_banner -nostdin -nostats -progress pipe:1 --emit-large "
+        );
+        let inventory: Vec<_> = lines.into_iter().skip(1).collect();
+        assert_eq!(inventory.len(), 6);
+        for command in [
+            "-version",
+            "-buildconf",
+            "-hwaccels",
+            "-decoders",
+            "-encoders",
+            "-filters",
+        ] {
+            assert_eq!(
+                inventory
+                    .iter()
+                    .filter(|line| line.ends_with(&format!("{command} ")))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn nonzero_inventory_child_output_cannot_produce_inventory() {
+        let log_directory = tempfile::tempdir().unwrap();
+        let (_script_directory, executable) =
+            script(&log_directory.path().join("arguments.log"), true);
+        let runner = super::FfmpegRunner::new(executable);
+        assert!(runner.collect_inventory().await.is_err());
     }
 }

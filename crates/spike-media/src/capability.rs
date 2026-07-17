@@ -88,17 +88,26 @@ impl InventoryOutput {
         let output = if output.len() <= MAX_INVENTORY_OUTPUT_BYTES {
             output.to_owned()
         } else {
-            output
-                .char_indices()
-                .take_while(|(index, _)| *index < MAX_INVENTORY_OUTPUT_BYTES)
-                .map(|(_, character)| character)
-                .collect()
+            let mut end = 0;
+            for (index, character) in output.char_indices() {
+                let next = index + character.len_utf8();
+                if next > MAX_INVENTORY_OUTPUT_BYTES {
+                    break;
+                }
+                end = next;
+            }
+            output[..end].to_owned()
         };
         Self {
             command,
             exit_code,
             output,
         }
+    }
+
+    #[must_use]
+    pub const fn byte_len(&self) -> usize {
+        self.output.len()
     }
 }
 

@@ -50,6 +50,22 @@ fn inventory_rejects_missing_or_failed_command_outputs() {
 }
 
 #[test]
+fn inventory_output_cap_is_byte_strict_at_a_utf8_boundary() {
+    let input = format!("{}é", "x".repeat(65_535));
+    let output = InventoryOutput::success(InventoryCommand::Version, input);
+    assert_eq!(output.byte_len(), 65_535);
+    let inventory = Inventory::from_command_outputs(&[
+        output,
+        InventoryOutput::success(InventoryCommand::Buildconf, "buildconf"),
+        InventoryOutput::success(InventoryCommand::Hwaccels, "vaapi"),
+        InventoryOutput::success(InventoryCommand::Decoders, "h264"),
+        InventoryOutput::success(InventoryCommand::Encoders, "h264_vaapi"),
+        InventoryOutput::success(InventoryCommand::Filters, "scale_vaapi"),
+    ]);
+    assert!(inventory.is_ok());
+}
+
+#[test]
 fn videotoolbox_plan_uses_platform_decoder_and_encoder() {
     let plan = HardwarePlan::self_test(Backend::VideoToolbox);
     assert!(

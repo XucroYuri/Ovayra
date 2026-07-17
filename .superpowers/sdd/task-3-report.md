@@ -39,6 +39,36 @@ git diff --check
   PASS
 ```
 
+## Final review corrections (third TDD cycle)
+
+### RED evidence
+
+- Added a diagnostic-redaction test containing bare filenames, quoted URLs with query strings,
+  Windows paths, and home-relative paths. It failed because bare names and URLs survived the old
+  path-only redaction.
+- Added a UTF-8 boundary inventory test. The new `byte_len` assertion initially did not compile,
+  documenting the required byte-observable API.
+
+### GREEN corrections and verification
+
+- Stderr normalization now retains only a stable per-line diagnostic marker before SHA-256. No
+  filename, relative/absolute/home path, Windows path, URL, or query value remains in hashed
+  bytes; diagnostics that differ only by private names normalize identically.
+- Inventory truncation now chooses the largest valid UTF-8 boundary at or below 65,536 bytes.
+- Unix-host runner integration tests execute a temporary child script to prove common argument
+  ordering, stdout/stderr separation, >1 MiB stderr draining, the exact six inventory calls, and
+  rejection of a nonzero inventory command.
+
+```text
+cargo fmt
+cargo clippy -p spike-media --all-targets --all-features -- -D warnings
+  PASS
+cargo test -p spike-media --all-targets --all-features
+  PASS: 25 tests passed
+git diff --check
+  PASS
+```
+
 Cargo printed pre-existing workspace warnings about the pinned `toml = "=1.1.3+spec-1.1.0"`
 metadata in other crate manifests; dependency pins were intentionally not modified.
 
