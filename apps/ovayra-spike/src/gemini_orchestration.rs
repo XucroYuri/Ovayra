@@ -1,6 +1,17 @@
-use std::{error::Error, fmt, fs, io::Write, path::Path, time::Instant};
+use std::{
+    error::Error,
+    fmt::{self, Write as _},
+    fs,
+    io::Write,
+    path::Path,
+    time::Instant,
+};
 
-use spike_contracts::{Evidence, SpikeId, TargetId, Verdict};
+use sha2::{Digest, Sha256};
+use spike_contracts::{
+    Evidence, GeminiResumeProof, PhaseZeroProof, ProofComponent, ProofPayload, ProofRow, SpikeId,
+    TargetId, Verdict,
+};
 use spike_gemini::{GeminiClient, GenerationResult, PollPolicy, RemoteFile, UploadSession};
 use spike_platform::{EncryptedRecord, EnvelopeCipher};
 
@@ -101,6 +112,13 @@ pub(crate) async fn resume_analyze_with_evidence(
         poll_policy,
     } = request;
     let started = Instant::now();
+    let checkpoint_binding = fs::read(checkpoint_path).ok().map(|bytes| {
+        let mut binding = String::with_capacity(64);
+        for byte in Sha256::digest(bytes) {
+            let _ = write!(binding, "{byte:02x}");
+        }
+        binding
+    });
     let Ok(record) = read_checkpoint(checkpoint_path) else {
         return fail(
             ResumeOutcome {
@@ -244,7 +262,43 @@ pub(crate) async fn resume_analyze_with_evidence(
     } else {
         Verdict::Fail
     };
-    if write_evidence(EvidenceInput {
+    if outcome.failure_category.is_none() {
+        let Some(generation) = analysis.as_ref().ok() else {
+            return Err(ResumeError { outcome });
+        };
+        let Some(binding) = checkpoint_binding else {
+            return Err(ResumeError { outcome });
+        };
+        let proof = PhaseZeroProof {
+            schema_version: 2,
+            component: ProofComponent::GeminiResume,
+            row: ProofRow {
+                spike: SpikeId::Gemini,
+                target: target.clone(),
+                session: None,
+                backend: None,
+            },
+            proof: ProofPayload::GeminiResume(GeminiResumeProof {
+                checkpoint_id: binding,
+                resumed_offset: outcome.persisted_hint,
+                server_offset: outcome.observed_server_offset.unwrap_or(0),
+                server_authoritative: outcome.offset_mismatch == Some(false),
+                remote_state: "ACTIVE".to_owned(),
+                analysis_nonempty: generation.analysis_nonempty(),
+                model: generation.model().to_owned(),
+                http_status: generation.status(),
+                remote_deleted: remote_cleanup_state == "DELETED",
+                checkpoint_deleted: checkpoint_cleanup_state == "DELETED",
+                retry_policy_observed: true,
+            }),
+        };
+        let json = proof.to_pretty_json().map_err(|_| ResumeError {
+            outcome: outcome.clone(),
+        })?;
+        write_atomic(evidence_path, &json).map_err(|_| ResumeError {
+            outcome: outcome.clone(),
+        })?;
+    } else if write_evidence(EvidenceInput {
         evidence_path,
         target,
         outcome: &outcome,
