@@ -119,9 +119,14 @@ jobs:
           bundle="$(dirname "$(dirname "$OVAYRA_FFMPEG")")"
           cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$bundle" --evidence "target/phase-0/bundle-$OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --output target/phase-0/fallback.webm --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-cpu.json"
-          render=(); if [ "$OVAYRA_BACKEND" = vaapi ]; then test -e /dev/dri/renderD128; render=(--render-device /dev/dri/renderD128); fi
-          cargo run --locked -p ovayra-spike -- media generate-hardware-fixture --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --output target/phase-0/synthetic-h264-aac.mp4 "${render[@]}"
-          cargo run --locked -p ovayra-spike -- media self-test --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --input target/phase-0/synthetic-h264-aac.mp4 --output target/phase-0/hardware.mp4 "${render[@]}" --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-hardware.json"
+          if [ "$OVAYRA_BACKEND" = vaapi ]; then
+            test -e /dev/dri/renderD128
+            cargo run --locked -p ovayra-spike -- media generate-hardware-fixture --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --output target/phase-0/synthetic-h264-aac.mp4 --render-device /dev/dri/renderD128
+            cargo run --locked -p ovayra-spike -- media self-test --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --input target/phase-0/synthetic-h264-aac.mp4 --output target/phase-0/hardware.mp4 --render-device /dev/dri/renderD128 --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-hardware.json"
+          else
+            cargo run --locked -p ovayra-spike -- media generate-hardware-fixture --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --output target/phase-0/synthetic-h264-aac.mp4
+            cargo run --locked -p ovayra-spike -- media self-test --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --input target/phase-0/synthetic-h264-aac.mp4 --output target/phase-0/hardware.mp4 --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-hardware.json"
+          fi
           cargo run --locked -p ovayra-spike -- media forced-fallback --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --input target/phase-0/synthetic-h264-aac.mp4 --output target/phase-0/forced-fallback.webm --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-forced.json"
       - name: Validate bundle, CPU fallback, hardware and forced fallback (Windows)
         if: runner.os == 'Windows'

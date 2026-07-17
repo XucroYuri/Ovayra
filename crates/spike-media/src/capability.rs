@@ -470,10 +470,14 @@ impl HardwarePlan {
             Backend::D3d11vaMf => vec![
                 "-hwaccel",
                 "d3d11va",
+                "-hw_encoding",
+                "1",
                 "-i",
                 "synthetic-h264-aac.mp4",
                 "-vf",
                 "scale=1280:720",
+                "-pix_fmt",
+                "nv12",
                 "-c:v",
                 "h264_mf",
                 "-c:a",
@@ -615,10 +619,12 @@ impl HardwarePlan {
                 OsString::from("yuv420p"),
             ]),
             Backend::D3d11vaMf => args.extend([
+                OsString::from("-hw_encoding"),
+                OsString::from("1"),
                 OsString::from("-c:v"),
                 OsString::from("h264_mf"),
                 OsString::from("-pix_fmt"),
-                OsString::from("yuv420p"),
+                OsString::from("nv12"),
             ]),
             Backend::NvencNvdec => args.extend([
                 OsString::from("-c:v"),

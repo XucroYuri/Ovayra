@@ -109,7 +109,6 @@ fn fixture_generation_uses_the_exact_native_encoder_for_each_backend() {
 
     for (backend, encoder) in [
         (Backend::VideoToolbox, "h264_videotoolbox"),
-        (Backend::D3d11vaMf, "h264_mf"),
         (Backend::NvencNvdec, "h264_nvenc"),
     ] {
         let args = fixture(backend, None);
@@ -138,6 +137,74 @@ fn fixture_generation_uses_the_exact_native_encoder_for_each_backend() {
             ]
         );
     }
+}
+
+#[test]
+fn media_foundation_fixture_and_self_test_force_hardware_nv12_encoding() {
+    let fixture = HardwarePlan::self_test(Backend::D3d11vaMf)
+        .fixture_args(std::path::Path::new("fixture.mp4"), None)
+        .into_iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        fixture,
+        vec![
+            "-y",
+            "-nostdin",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=1280x720:rate=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=48000",
+            "-t",
+            "10",
+            "-hw_encoding",
+            "1",
+            "-c:v",
+            "h264_mf",
+            "-pix_fmt",
+            "nv12",
+            "-c:a",
+            "aac",
+            "fixture.mp4",
+        ]
+    );
+
+    let self_test = HardwarePlan::self_test(Backend::D3d11vaMf)
+        .transcode_args(
+            std::path::Path::new("fixture.mp4"),
+            std::path::Path::new("hardware.mp4"),
+            None,
+        )
+        .into_iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        self_test,
+        vec![
+            "-y",
+            "-hwaccel",
+            "d3d11va",
+            "-hw_encoding",
+            "1",
+            "-i",
+            "fixture.mp4",
+            "-vf",
+            "scale=1280:720",
+            "-pix_fmt",
+            "nv12",
+            "-c:v",
+            "h264_mf",
+            "-c:a",
+            "copy",
+            "-t",
+            "10",
+            "hardware.mp4",
+        ]
+    );
 }
 
 #[test]
@@ -192,6 +259,22 @@ fn availability_requires_inventory_success_and_an_observed_video_frame() {
     assert!(!plan.is_available(&inventory, true, 0));
     assert!(!plan.is_available(&inventory, false, 1));
     assert!(plan.is_available(&inventory, true, 1));
+}
+
+#[test]
+fn media_foundation_availability_still_requires_its_encoder_and_scale_filter() {
+    let plan = HardwarePlan::self_test(Backend::D3d11vaMf);
+    assert!(plan.is_available(&complete_inventory(), true, 1));
+    let missing_mf_encoder = Inventory::from_command_outputs(&[
+        InventoryOutput::success(InventoryCommand::Version, "version"),
+        InventoryOutput::success(InventoryCommand::Buildconf, "buildconf"),
+        InventoryOutput::success(InventoryCommand::Hwaccels, "d3d11va"),
+        InventoryOutput::success(InventoryCommand::Decoders, "h264"),
+        InventoryOutput::success(InventoryCommand::Encoders, "h264_nvenc"),
+        InventoryOutput::success(InventoryCommand::Filters, "scale"),
+    ])
+    .unwrap();
+    assert!(!plan.is_available(&missing_mf_encoder, true, 1));
 }
 
 #[test]

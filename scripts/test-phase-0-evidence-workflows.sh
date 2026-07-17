@@ -21,6 +21,40 @@ if rg -F --quiet 'libx264' .github/workflows/phase-0-device.yml; then
   exit 1
 fi
 
+posix_core="$(awk '
+  /name: Validate bundle, CPU fallback, hardware and forced fallback \(POSIX\)/ { in_core = 1; next }
+  in_core && /name: Validate bundle, CPU fallback, hardware and forced fallback \(Windows\)/ { exit }
+  in_core { print }
+' .github/workflows/phase-0-device.yml)"
+if printf '%s\n' "$posix_core" | rg -F --quiet 'render=()'; then
+  echo 'POSIX core workflow must not rely on a Bash empty array under set -u' >&2
+  exit 1
+fi
+if printf '%s\n' "$posix_core" | rg -F --quiet '${render[@]}'; then
+  echo 'POSIX core workflow must not expand an empty render array' >&2
+  exit 1
+fi
+printf '%s\n' "$posix_core" | rg -F --quiet 'if [ "$OVAYRA_BACKEND" = vaapi ]; then'
+vaapi_commands="$(printf '%s\n' "$posix_core" | awk '
+  /if \[ "\$OVAYRA_BACKEND" = vaapi \]; then/ { in_vaapi = 1; next }
+  in_vaapi && /^[[:space:]]*else$/ { exit }
+  in_vaapi { print }
+')"
+non_vaapi_commands="$(printf '%s\n' "$posix_core" | awk '
+  /^[[:space:]]*else$/ { in_non_vaapi = 1; next }
+  in_non_vaapi && /^[[:space:]]*fi$/ { exit }
+  in_non_vaapi { print }
+')"
+for command in 'media generate-hardware-fixture' 'media self-test'; do
+  vaapi_command_line="$(printf '%s\n' "$vaapi_commands" | rg -F "$command")"
+  printf '%s\n' "$vaapi_command_line" | rg -F --quiet -- '--render-device /dev/dri/renderD128'
+  printf '%s\n' "$non_vaapi_commands" | rg -F --quiet "$command"
+done
+if printf '%s\n' "$non_vaapi_commands" | rg -F --quiet -- '--render-device'; then
+  echo 'non-VAAPI commands must not receive a render device' >&2
+  exit 1
+fi
+
 gemini_matrix_targets() {
   awk '
     /^  gemini:$/ { in_gemini = 1; next }
