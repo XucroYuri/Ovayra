@@ -11,6 +11,11 @@
   rejection check that proves the source package is unchanged.
 - RED: the new release CLI test failed on absent packaging/manifest variants.
   GREEN: it parses the bounded prepare/manifest/verify/tamper contracts.
+- Remediation RED/GREEN: fixture packages now use the deterministic normalized
+  app archive/MSI/AppImage names and cargo-packager 0.11.8's actual single
+  base64 `.sig` envelope. The parser decodes that envelope exactly once,
+  preserves raw `.minisig` support, and rejects double encoding and multiple
+  sidecars.
 
 ## Fixture hygiene
 
@@ -29,6 +34,10 @@ private-key header outside that temporary directory.
 - `cargo fmt` and `git diff --check`
 - Exact `cargo-packager 0.11.8` is installed and its real CLI confirmed the
   config option and all requested package format names.
+- The Task 10 workflow uploads the verified B-stage as
+  `ffmpeg-<target-id>-bundle`; release resolution binds the artifact run to
+  the exact checkout SHA and waits for a successful producer rather than using
+  an unrelated latest run.
 
 ## Native-release boundary
 
@@ -40,3 +49,9 @@ specified validated bundle artifact or protected signing inputs are absent;
 PR jobs receive no signing secrets. A local macOS cargo-packager invocation
 was started only to force the exact config through the real packager/build
 path; full native packaging remains gated on the validated bundle.
+
+Protected native jobs fail early on absent signing input, code-sign/notarize
+and staple macOS artifacts before creating the updater archive, Authenticode
+and verify the MSI before its updater signature, and sign Linux AppImage/deb.
+The protected tag aggregation accepts only those normalized signed artifacts,
+then produces/verifies/publishes `latest.json` and `downloads.json`.

@@ -5579,6 +5579,7 @@ dependencies = [
 name = "spike-release"
 version = "0.0.1"
 dependencies = [
+ "base64",
  "hex",
  "minisign-verify",
  "semver",

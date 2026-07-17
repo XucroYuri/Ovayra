@@ -7,6 +7,7 @@ use std::{
     path::Path,
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use semver::Version;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -205,28 +206,37 @@ enum ArtifactKind {
 }
 
 fn artifact_kind(name: &str) -> Option<ArtifactKind> {
-    if name.ends_with("-aarch64.app") {
+    if normalized_name(name, "darwin-aarch64.app.tar.gz") {
         Some(ArtifactKind::Update {
             target: "darwin-aarch64",
             format: UpdateFormat::App,
         })
-    } else if name.ends_with("-x64.msi") {
+    } else if normalized_name(name, "windows-x86_64.msi") {
         Some(ArtifactKind::Update {
             target: "windows-x86_64",
             format: UpdateFormat::Wix,
         })
-    } else if name.ends_with("-x86_64.AppImage") {
+    } else if normalized_name(name, "linux-x86_64.AppImage") {
         Some(ArtifactKind::Update {
             target: "linux-x86_64",
             format: UpdateFormat::Appimage,
         })
-    } else if Path::new(name).extension().is_some_and(|extension| {
-        extension.eq_ignore_ascii_case("deb") || extension.eq_ignore_ascii_case("dmg")
-    }) {
+    } else if normalized_name(name, "darwin-aarch64.dmg")
+        || normalized_name(name, "linux-x86_64.deb")
+    {
         Some(ArtifactKind::Download)
     } else {
         None
     }
+}
+
+fn normalized_name(name: &str, suffix: &str) -> bool {
+    name.starts_with("ovayra-phase-0_")
+        && name.ends_with(suffix)
+        && name
+            .strip_prefix("ovayra-phase-0_")
+            .and_then(|value| value.split_once('_'))
+            .is_some_and(|(version, target)| Version::parse(version).is_ok() && target == suffix)
 }
 
 fn canonical_base_url(value: &str) -> Result<Url, PackageError> {
@@ -301,7 +311,27 @@ fn read_signature_for(package: &Path, name: &str) -> Result<String, PackageError
             "package must have exactly one detached signature sidecar",
         ));
     }
-    read_signature(present[0])
+    let signature = read_signature(present[0])?;
+    if present[0]
+        .extension()
+        .is_some_and(|extension| extension == "sig")
+    {
+        let decoded = STANDARD
+            .decode(signature.trim())
+            .map_err(|_| policy("cargo-packager signature is not a single base64 envelope"))?;
+        let raw = String::from_utf8(decoded)
+            .map_err(|_| policy("cargo-packager signature is not UTF-8"))?;
+        if raw.lines().count() != 4
+            || raw.lines().any(str::is_empty)
+            || STANDARD.decode(raw.trim()).is_ok()
+        {
+            return Err(policy(
+                "cargo-packager signature is malformed or double encoded",
+            ));
+        }
+        return Ok(raw);
+    }
+    Ok(signature)
 }
 
 fn read_text_bounded(path: &Path, max: u64) -> Result<String, PackageError> {

@@ -183,8 +183,10 @@ pub(crate) enum ReleaseCommand {
         base_url: String,
         #[arg(long)]
         output: PathBuf,
-        #[arg(long, default_value = env!("CARGO_PKG_VERSION"))]
+        #[arg(long)]
         version: String,
+        #[arg(long)]
+        release_tag: String,
         #[arg(long)]
         pub_date: String,
         #[arg(long, default_value = "Ovayra Phase 0 release")]
@@ -198,7 +200,7 @@ pub(crate) enum ReleaseCommand {
         packages: PathBuf,
         #[arg(long, env = "OVAYRA_UPDATE_PUBLIC_KEY")]
         public_key: PathBuf,
-        #[arg(long, default_value = env!("CARGO_PKG_VERSION"))]
+        #[arg(long)]
         installed_version: String,
     },
     /// Corrupt a temporary package copy and prove manifest verification rejects it.
@@ -209,7 +211,7 @@ pub(crate) enum ReleaseCommand {
         packages: PathBuf,
         #[arg(long, env = "OVAYRA_UPDATE_PUBLIC_KEY")]
         public_key: PathBuf,
-        #[arg(long, default_value = env!("CARGO_PKG_VERSION"))]
+        #[arg(long)]
         installed_version: String,
     },
 }
@@ -281,6 +283,10 @@ mod tests {
             "latest.json",
             "--pub-date",
             "2026-07-17T00:00:00Z",
+            "--version",
+            "0.0.2",
+            "--release-tag",
+            "phase-0-v0.0.2",
         ])
         .unwrap();
         assert!(matches!(
@@ -301,6 +307,8 @@ mod tests {
                 "packages",
                 "--public-key",
                 "update.pub",
+                "--installed-version",
+                "0.0.1",
             ])
             .unwrap();
             assert!(matches!(cli.command, Command::Release { .. }));

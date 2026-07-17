@@ -168,11 +168,19 @@ fn main() -> Result<()> {
                     base_url,
                     output,
                     version,
+                    release_tag,
                     pub_date,
                     notes,
                 },
         } => {
             let version = Version::parse(&version).context("release version must be SemVer")?;
+            if version.to_string() != env!("CARGO_PKG_VERSION")
+                || release_tag != format!("phase-0-v{version}")
+            {
+                anyhow::bail!(
+                    "release version must equal the workspace package version and protected phase-0 tag"
+                );
+            }
             PackageRelease::generate_manifest(
                 &packages, &base_url, &output, &version, &pub_date, &notes,
             )
@@ -240,15 +248,26 @@ fn prepare_package(bundle: &Path, target: &str, output_root: &Path) -> Result<()
     let temporary = tempfile::Builder::new()
         .prefix("ovayra-package-")
         .tempdir_in(output_root)?;
-    let staged_bundle = temporary.path().join("ffmpeg-stage");
+    let generation = temporary.path().join("generation");
+    let staged_bundle = generation.join("ffmpeg-stage");
     copy_validated_tree(bundle, &staged_bundle)?;
-    generate_icons(&temporary.path().join("icons"))?;
-    for directory in ["ffmpeg-stage", "icons"] {
-        let destination = output_root.join(directory);
-        if destination.exists() {
-            fs::remove_dir_all(&destination)?;
+    generate_icons(&generation.join("icons"))?;
+    let current = output_root.join("current");
+    let previous = output_root.join("previous-generation");
+    if previous.exists() {
+        fs::remove_dir_all(&previous)?;
+    }
+    if current.exists() {
+        fs::rename(&current, &previous)?;
+    }
+    if let Err(error) = fs::rename(&generation, &current) {
+        if previous.exists() {
+            fs::rename(&previous, &current)?;
         }
-        fs::rename(temporary.path().join(directory), destination)?;
+        return Err(error.into());
+    }
+    if previous.exists() {
+        fs::remove_dir_all(previous)?;
     }
     println!("PACKAGE_PREPARE=PASS target={target}");
     Ok(())

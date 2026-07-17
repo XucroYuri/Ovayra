@@ -5,18 +5,18 @@ identifier = "com.ovayra.phase0"
 publisher = "Ovayra"
 description = "Ovayra Phase 0 feasibility spike"
 beforePackagingCommand = "cargo build --locked --release -p ovayra-spike"
-binariesDir = "target/release"
-outDir = "target/phase-0/packages"
+binariesDir = "../target/release"
+outDir = "../target/phase-0/packages"
 formats = ["app", "dmg", "wix", "appimage", "deb"]
-icons = ["target/phase-0/icons/*.png", "target/phase-0/icons/spike.ico", "target/phase-0/icons/spike.icns"]
-licenseFile = "packaging/NOTICE.txt"
+icons = ["../target/phase-0/current/icons/*.png", "../target/phase-0/current/icons/spike.ico", "../target/phase-0/current/icons/spike.icns"]
+licenseFile = "NOTICE.txt"
 resources = [
-  { src = "target/phase-0/ffmpeg-stage/bin/**", target = "ffmpeg/bin" },
-  { src = "target/phase-0/ffmpeg-stage/LICENSES/**", target = "ffmpeg/LICENSES" },
-  { src = "target/phase-0/ffmpeg-stage/provenance/**", target = "ffmpeg/provenance" },
-  { src = "target/phase-0/ffmpeg-stage/sbom/**", target = "ffmpeg/sbom" },
-  { src = "target/phase-0/ffmpeg-stage/NOTICE.txt", target = "ffmpeg/NOTICE.txt" },
-  { src = "packaging/NOTICE.txt", target = "NOTICE.txt" },
+  { src = "../target/phase-0/current/ffmpeg-stage/bin/**", target = "ffmpeg/bin" },
+  { src = "../target/phase-0/current/ffmpeg-stage/LICENSES/**", target = "ffmpeg/LICENSES" },
+  { src = "../target/phase-0/current/ffmpeg-stage/provenance/**", target = "ffmpeg/provenance" },
+  { src = "../target/phase-0/current/ffmpeg-stage/sbom/**", target = "ffmpeg/sbom" },
+  { src = "../target/phase-0/current/ffmpeg-stage/NOTICE.txt", target = "ffmpeg/NOTICE.txt" },
+  { src = "NOTICE.txt", target = "NOTICE.txt" },
 ]
 
 [[binaries]]

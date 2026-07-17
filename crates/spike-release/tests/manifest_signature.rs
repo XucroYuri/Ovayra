@@ -1,5 +1,6 @@
 use std::fs;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use semver::Version;
 use spike_release::{PackageRelease, ReleaseManifest, ReleaseVerifier};
 
@@ -106,15 +107,17 @@ fn package_manifest_uses_only_signed_updater_artifacts_and_keeps_deb_downloads_s
     let packages = tempfile::tempdir().unwrap();
     let output = tempfile::tempdir().unwrap();
     for name in [
-        "Ovayra-Phase-0-aarch64.app",
-        "Ovayra-Phase-0-x64.msi",
-        "Ovayra-Phase-0-x86_64.AppImage",
-        "Ovayra-Phase-0-x86_64.deb",
+        "ovayra-phase-0_0.0.2_darwin-aarch64.app.tar.gz",
+        "ovayra-phase-0_0.0.2_windows-x86_64.msi",
+        "ovayra-phase-0_0.0.2_linux-x86_64.AppImage",
+        "ovayra-phase-0_0.0.2_darwin-aarch64.dmg",
+        "ovayra-phase-0_0.0.2_linux-x86_64.deb",
     ] {
         fs::copy("tests/fixtures/update-test.bin", packages.path().join(name)).unwrap();
-        fs::copy(
-            "tests/fixtures/update-test.bin.minisig",
-            packages.path().join(format!("{name}.minisig")),
+        let raw = fs::read_to_string("tests/fixtures/update-test.bin.minisig").unwrap();
+        fs::write(
+            packages.path().join(format!("{name}.sig")),
+            STANDARD.encode(raw),
         )
         .unwrap();
     }
@@ -146,9 +149,9 @@ fn package_manifest_verification_rejects_a_tampered_real_file_without_touching_t
     let packages = tempfile::tempdir().unwrap();
     let output = tempfile::tempdir().unwrap();
     for name in [
-        "Ovayra-Phase-0-aarch64.app",
-        "Ovayra-Phase-0-x64.msi",
-        "Ovayra-Phase-0-x86_64.AppImage",
+        "ovayra-phase-0_0.0.2_darwin-aarch64.app.tar.gz",
+        "ovayra-phase-0_0.0.2_windows-x86_64.msi",
+        "ovayra-phase-0_0.0.2_linux-x86_64.AppImage",
     ] {
         fs::copy("tests/fixtures/update-test.bin", packages.path().join(name)).unwrap();
         fs::copy(
@@ -176,7 +179,9 @@ fn package_manifest_verification_rejects_a_tampered_real_file_without_touching_t
     )
     .unwrap();
 
-    let source = packages.path().join("Ovayra-Phase-0-x64.msi");
+    let source = packages
+        .path()
+        .join("ovayra-phase-0_0.0.2_windows-x86_64.msi");
     let original = fs::read(&source).unwrap();
     assert!(
         PackageRelease::verify_tamper_rejection(
@@ -188,4 +193,42 @@ fn package_manifest_verification_rejects_a_tampered_real_file_without_touching_t
         .is_ok()
     );
     assert_eq!(fs::read(source).unwrap(), original);
+}
+
+#[test]
+fn package_rejects_a_malformed_double_encoded_or_ambiguous_cargo_packager_signature() {
+    let packages = tempfile::tempdir().unwrap();
+    let output = tempfile::tempdir().unwrap();
+    let names = [
+        "ovayra-phase-0_0.0.2_darwin-aarch64.app.tar.gz",
+        "ovayra-phase-0_0.0.2_windows-x86_64.msi",
+        "ovayra-phase-0_0.0.2_linux-x86_64.AppImage",
+    ];
+    for name in names {
+        fs::copy("tests/fixtures/update-test.bin", packages.path().join(name)).unwrap();
+        let raw = fs::read_to_string("tests/fixtures/update-test.bin.minisig").unwrap();
+        fs::write(
+            packages.path().join(format!("{name}.sig")),
+            STANDARD.encode(&raw),
+        )
+        .unwrap();
+    }
+    let first = packages.path().join(names[0]);
+    let once = fs::read_to_string(first.with_file_name(format!("{}.sig", names[0]))).unwrap();
+    fs::write(
+        first.with_file_name(format!("{}.minisig", names[0])),
+        STANDARD.encode(once),
+    )
+    .unwrap();
+    assert!(
+        PackageRelease::generate_manifest(
+            packages.path(),
+            "https://updates.ovayra.com/phase-0/",
+            &output.path().join("latest.json"),
+            &Version::parse("0.0.2").unwrap(),
+            "2026-07-17T00:00:00Z",
+            "release"
+        )
+        .is_err()
+    );
 }
