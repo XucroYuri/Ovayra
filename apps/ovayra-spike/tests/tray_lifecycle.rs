@@ -21,11 +21,12 @@ fn forced_fallback_observes_a_native_close_request_and_keeps_the_window_visible(
     assert!(output.status.success(), "{output:?}");
     let evidence: serde_json::Value =
         serde_json::from_slice(&std::fs::read(evidence.path()).unwrap()).unwrap();
-    let measured = &evidence["measurements"];
-    assert_eq!(measured["automation_native_close_event"], true);
-    assert_eq!(measured["window_accessible"], true);
-    assert_eq!(measured["warning_visible"], true);
-    assert_eq!(measured["tray_status"], "forced_no_tray");
+    assert_eq!(evidence["component"], "platform_no_tray");
+    let proof = &evidence["proof"];
+    assert_eq!(proof["kind"], "platform_no_tray");
+    assert_eq!(proof["accessible"], true);
+    assert_eq!(proof["warning_shown"], true);
+    assert_eq!(proof["quit"], true);
 }
 
 #[test]
@@ -46,9 +47,10 @@ fn tray_mode_observes_native_hide_restore_and_quit() {
     assert!(output.status.success(), "{output:?}");
     let evidence: serde_json::Value =
         serde_json::from_slice(&std::fs::read(evidence.path()).unwrap()).unwrap();
-    let measured = &evidence["measurements"];
-    assert_eq!(measured["automation_native_close_event"], true);
-    assert_eq!(measured["automation_hide"], true);
-    assert_eq!(measured["automation_restore"], true);
-    assert_eq!(measured["automation_quit_callback"], true);
+    assert_eq!(evidence["component"], "platform_tray");
+    let proof = &evidence["proof"];
+    assert_eq!(proof["kind"], "platform_tray");
+    assert_eq!(proof["hidden"], true);
+    assert_eq!(proof["restored"], true);
+    assert_eq!(proof["quit"], true);
 }

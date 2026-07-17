@@ -204,6 +204,15 @@ pub(crate) enum ReleaseCommand {
         #[arg(long)]
         evidence: PathBuf,
     },
+    /// Verify two independently-built `FFmpeg` bundles are policy-valid and byte reproducible.
+    VerifyFfmpegPair {
+        #[arg(long)]
+        bundle_a: PathBuf,
+        #[arg(long)]
+        bundle_b: PathBuf,
+        #[arg(long)]
+        evidence: PathBuf,
+    },
     /// Validate a target-bound `FFmpeg` bundle and create deterministic package resources.
     PreparePackage {
         #[arg(long, env = "OVAYRA_FFMPEG_BUNDLE")]
@@ -293,6 +302,28 @@ mod tests {
             cli.command,
             Command::Release {
                 command: ReleaseCommand::VerifyFfmpeg { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_the_fail_closed_ffmpeg_reproducibility_contract() {
+        let cli = Cli::try_parse_from([
+            "ovayra-spike",
+            "release",
+            "verify-ffmpeg-pair",
+            "--bundle-a",
+            "bundle-a",
+            "--bundle-b",
+            "bundle-b",
+            "--evidence",
+            "evidence.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Release {
+                command: ReleaseCommand::VerifyFfmpegPair { .. }
             }
         ));
     }
@@ -520,7 +551,7 @@ mod tests {
             "--ffprobe",
             "bundle/ffprobe",
             "--seconds",
-            "3",
+            "10",
             "--output",
             "fallback.webm",
             "--evidence",
@@ -542,7 +573,7 @@ mod tests {
         };
         assert_eq!(ffmpeg, PathBuf::from("bundle/ffmpeg"));
         assert_eq!(ffprobe, PathBuf::from("bundle/ffprobe"));
-        assert_eq!(seconds, 3);
+        assert_eq!(seconds, 10);
         assert_eq!(output, PathBuf::from("fallback.webm"));
         assert_eq!(evidence, PathBuf::from("cpu-fallback.json"));
     }

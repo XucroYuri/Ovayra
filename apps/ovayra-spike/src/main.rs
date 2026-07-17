@@ -6,7 +6,9 @@ mod gemini_orchestration;
 mod preview_app;
 
 use std::{
-    env, fs,
+    env,
+    fmt::Write as _,
+    fs,
     io::{BufReader, BufWriter},
     path::Path,
     path::PathBuf,
@@ -17,10 +19,10 @@ use aes_gcm::aead::Generate;
 use anyhow::{Context, Result};
 use clap::Parser;
 use semver::Version;
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 use spike_contracts::{
-    Evidence, GeminiStageProof, MediaCpuProof, MediaForcedFallbackProof, MediaHardwareProof,
-    PhaseZeroProof, PlatformKeyringProof, SpikeId, TargetId, Verdict,
+    DistributionFfmpegProof, Evidence, GeminiStageProof, MediaCpuProof, MediaForcedFallbackProof,
+    MediaHardwareProof, PhaseZeroProof, PlatformKeyringProof, SpikeId, TargetId, Verdict,
 };
 use spike_contracts::{
     PlatformProcessProof, ProofComponent, ProofPayload, ProofRow, phase_zero_session,
@@ -182,6 +184,14 @@ fn main() -> Result<()> {
         Command::Release {
             command: ReleaseCommand::VerifyFfmpeg { bundle, evidence },
         } => verify_ffmpeg_bundle(&bundle, &evidence, evidence_target()?)?,
+        Command::Release {
+            command:
+                ReleaseCommand::VerifyFfmpegPair {
+                    bundle_a,
+                    bundle_b,
+                    evidence,
+                },
+        } => verify_ffmpeg_pair(&bundle_a, &bundle_b, &evidence, evidence_target()?)?,
         Command::Release {
             command:
                 ReleaseCommand::PreparePackage {
@@ -426,6 +436,113 @@ fn verify_ffmpeg_bundle(bundle: &Path, evidence_path: &Path, target: TargetId) -
     result.context("FFmpeg bundle policy validation failed")?;
     println!("FFMPEG_BUNDLE=PASS license=LGPL-only source_correspondence=PASS");
     Ok(())
+}
+
+fn verify_ffmpeg_pair(
+    bundle_a: &Path,
+    bundle_b: &Path,
+    evidence_path: &Path,
+    target: TargetId,
+) -> Result<()> {
+    validate_ffmpeg_bundle_for_target(bundle_a, &target)?;
+    validate_ffmpeg_bundle_for_target(bundle_b, &target)?;
+
+    let tuples_a = ffmpeg_tree_tuples(bundle_a)?;
+    let tuples_b = ffmpeg_tree_tuples(bundle_b)?;
+    if tuples_a != tuples_b {
+        anyhow::bail!("independently-built FFmpeg bundles are not reproducible");
+    }
+    let tree_a = ffmpeg_tuple_digest(&tuples_a);
+
+    let proof = PhaseZeroProof {
+        schema_version: 2,
+        component: ProofComponent::DistributionFfmpeg,
+        row: ProofRow {
+            spike: SpikeId::Distribution,
+            target,
+            session: None,
+            backend: None,
+        },
+        proof: ProofPayload::DistributionFfmpeg(DistributionFfmpegProof {
+            immutable_lock: true,
+            source_signature: true,
+            sbom: true,
+            reproducible: true,
+            lgpl_only: true,
+            source_correspondence: true,
+        }),
+    };
+    write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)?;
+    println!("FFMPEG_TREE_SHA256={tree_a}");
+    println!("FFMPEG_REPRODUCIBILITY=PASS");
+    Ok(())
+}
+
+fn validate_ffmpeg_bundle_for_target(bundle: &Path, target: &TargetId) -> Result<()> {
+    FfmpegBundle::validate(bundle).context("FFmpeg bundle policy validation failed")?;
+    let marker = fs::read_to_string(bundle.join(".ovayra-target"))
+        .context("cannot read FFmpeg bundle target marker")?;
+    if marker.trim() != target.as_str() {
+        anyhow::bail!("FFmpeg bundle target marker does not match OVAYRA_TARGET_ID");
+    }
+    Ok(())
+}
+
+/// Mirrors `scripts/compare-ffmpeg-reproducibility.sh`: a sorted stream of
+/// `relative-path<TAB>SHA-256<TAB>size` tuples hashed as one deterministic digest.
+fn ffmpeg_tree_tuples(bundle: &Path) -> Result<Vec<String>> {
+    let root = fs::canonicalize(bundle).context("cannot canonicalize FFmpeg bundle root")?;
+    let mut tuples = Vec::new();
+    collect_ffmpeg_tree_tuples(&root, &root, &mut tuples)?;
+    tuples.sort_unstable();
+    Ok(tuples)
+}
+
+fn ffmpeg_tuple_digest(tuples: &[String]) -> String {
+    let mut digest = Sha256::new();
+    for tuple in tuples {
+        digest.update(tuple.as_bytes());
+        digest.update(b"\n");
+    }
+    sha256_hex(&digest.finalize())
+}
+
+fn collect_ffmpeg_tree_tuples(
+    root: &Path,
+    directory: &Path,
+    tuples: &mut Vec<String>,
+) -> Result<()> {
+    for entry in fs::read_dir(directory).context("cannot enumerate FFmpeg bundle")? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            collect_ffmpeg_tree_tuples(root, &path, tuples)?;
+        } else if metadata.is_file() {
+            let relative = path
+                .strip_prefix(root)
+                .expect("walked paths remain beneath the canonical root")
+                .to_str()
+                .context("FFmpeg bundle path is not valid UTF-8")?;
+            let hash = Sha256::digest(fs::read(&path)?);
+            tuples.push(format!(
+                "{relative}\t{}\t{}",
+                sha256_hex(&hash),
+                metadata.len()
+            ));
+        } else {
+            anyhow::bail!("FFmpeg bundle contains a non-regular path");
+        }
+    }
+    Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    output
 }
 
 fn process_smoke(evidence_path: &Path, target: &TargetId) -> Result<()> {
@@ -1015,7 +1132,38 @@ mod tests {
     use spike_contracts::TargetId;
     use spike_platform::MemorySecretStore;
 
-    use super::{evidence_target_from_values, keyring_smoke, write_evidence_atomic};
+    use super::{
+        evidence_target_from_values, ffmpeg_tree_tuples, ffmpeg_tuple_digest, keyring_smoke,
+        write_evidence_atomic,
+    };
+
+    #[test]
+    fn ffmpeg_tree_digest_matches_the_sorted_path_hash_size_contract() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle_a = directory.path().join("bundle-a");
+        let bundle_b = directory.path().join("bundle-b");
+        fs::create_dir_all(bundle_a.join("nested")).unwrap();
+        fs::create_dir_all(bundle_b.join("nested")).unwrap();
+        fs::write(bundle_a.join("nested/file.txt"), "same").unwrap();
+        fs::write(bundle_a.join("root.txt"), "content").unwrap();
+        fs::write(bundle_b.join("root.txt"), "content").unwrap();
+        fs::write(bundle_b.join("nested/file.txt"), "same").unwrap();
+
+        assert_eq!(
+            ffmpeg_tree_tuples(&bundle_a).unwrap(),
+            ffmpeg_tree_tuples(&bundle_b).unwrap()
+        );
+        assert_eq!(
+            ffmpeg_tuple_digest(&ffmpeg_tree_tuples(&bundle_a).unwrap()),
+            ffmpeg_tuple_digest(&ffmpeg_tree_tuples(&bundle_b).unwrap())
+        );
+
+        fs::write(bundle_b.join("nested/file.txt"), "different").unwrap();
+        assert_ne!(
+            ffmpeg_tree_tuples(&bundle_a).unwrap(),
+            ffmpeg_tree_tuples(&bundle_b).unwrap()
+        );
+    }
 
     #[test]
     fn keyring_smoke_round_trips_binary_data_and_writes_redacted_evidence() {
@@ -1032,8 +1180,9 @@ mod tests {
 
         let evidence = fs::read_to_string(evidence_path).unwrap();
         assert!(evidence.contains("\"spike\": \"platform\""));
-        assert!(evidence.contains("\"verdict\": \"pass\""));
-        assert!(evidence.contains("\"cleanup_status\": \"pass\""));
+        assert!(evidence.contains("\"component\": \"platform_keyring\""));
+        assert!(evidence.contains("\"set_ok\": true"));
+        assert!(evidence.contains("\"missing_after_delete\": true"));
         assert!(!evidence.contains("account"));
         assert!(!evidence.contains("secret"));
     }

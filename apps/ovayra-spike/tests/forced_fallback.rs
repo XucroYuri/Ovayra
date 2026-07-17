@@ -84,9 +84,9 @@ printf '%s' '{"format":{"format_name":"matroska,webm","duration":"1"},"streams":
         assert!(lines[1].contains("libvpx-vp9"));
         assert!(lines[2].contains("-version"));
         let evidence_text = fs::read_to_string(evidence).unwrap();
-        assert!(evidence_text.contains("\"actual_backend\": \"cpu\""));
         assert!(evidence_text.contains("\"requested_backend\""));
-        assert!(evidence_text.contains("\"downgrade_code\""));
+        assert!(evidence_text.contains("\"cpu_restarts\": 1"));
+        assert!(evidence_text.contains("\"session_quarantined\": true"));
     }
 }
 

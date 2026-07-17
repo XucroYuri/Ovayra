@@ -133,10 +133,11 @@ jobs:
             bash scripts/check-ffmpeg-capabilities.sh --target-id "$OVAYRA_TARGET_ID" --ffmpeg "$stable/stage/bin/ffmpeg"
             "$stable/stage/bin/ffmpeg" -f lavfi -i testsrc2=size=320x180:rate=30 -f lavfi -i sine=frequency=1000 -t 10 -c:v libvpx-vp9 -c:a libopus "$stable/input.webm"
             cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg "$stable/stage/bin/ffmpeg" --ffprobe "$stable/stage/bin/ffprobe" --output "$stable/fallback.webm" --evidence "$stable/cpu-evidence.json"
-            cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$stable/stage" --evidence "docs/phase-0/evidence/ffmpeg-bundle-${OVAYRA_TARGET_ID}-$build.json"
+            cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$stable/stage" --evidence "$stable/ffmpeg-bundle-$build.json"
             cp -R "$stable/stage" "target/ffmpeg-$build-stage"; cp "$stable/cpu-evidence.json" "target/ffmpeg-$build-cpu-evidence.json"
           done
           bash scripts/compare-ffmpeg-reproducibility.sh target/ffmpeg-a-stage target/ffmpeg-b-stage
+          cargo run --locked -p ovayra-spike -- release verify-ffmpeg-pair --bundle-a target/ffmpeg-a-stage --bundle-b target/ffmpeg-b-stage --evidence "docs/phase-0/evidence/ffmpeg-repro-${OVAYRA_TARGET_ID}.json"
       - name: Build clean bundle A and B, validate policy, capabilities, and CPU smoke (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -153,10 +154,11 @@ jobs:
             & $bash scripts/check-ffmpeg-capabilities.sh --target-id $env:OVAYRA_TARGET_ID --ffmpeg "$stable/stage/bin/ffmpeg.exe"
             & "$stable/stage/bin/ffmpeg.exe" -f lavfi -i testsrc2=size=320x180:rate=30 -f lavfi -i sine=frequency=1000 -t 10 -c:v libvpx-vp9 -c:a libopus "$stable/input.webm"
             cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg "$stable/stage/bin/ffmpeg.exe" --ffprobe "$stable/stage/bin/ffprobe.exe" --output "$stable/fallback.webm" --evidence "$stable/cpu-evidence.json"
-            cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$stable/stage" --evidence "docs/phase-0/evidence/ffmpeg-bundle-$env:OVAYRA_TARGET_ID-$build.json"
+            cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$stable/stage" --evidence "$stable/ffmpeg-bundle-$build.json"
             Copy-Item "$stable/stage" "target/ffmpeg-$build-stage" -Recurse; Copy-Item "$stable/cpu-evidence.json" "target/ffmpeg-$build-cpu-evidence.json"
           }
           & $bash scripts/compare-ffmpeg-reproducibility.sh target/ffmpeg-a-stage target/ffmpeg-b-stage
+          cargo run --locked -p ovayra-spike -- release verify-ffmpeg-pair --bundle-a target/ffmpeg-a-stage --bundle-b target/ffmpeg-b-stage --evidence "docs/phase-0/evidence/ffmpeg-repro-$env:OVAYRA_TARGET_ID.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ffmpeg-${{ matrix.target.id }}-bundle
@@ -167,7 +169,7 @@ jobs:
         with:
           name: ffmpeg-${{ matrix.target.id }}-reports
           path: |
-            docs/phase-0/evidence/ffmpeg-bundle-*.json
+            docs/phase-0/evidence/ffmpeg-repro-*.json
             target/ffmpeg-a-stage/**
             target/ffmpeg-b-stage/**
             target/ffmpeg-a-cpu-evidence.json
