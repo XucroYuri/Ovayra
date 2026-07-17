@@ -1,0 +1,20 @@
+Ovayra FFmpeg bundle notices
+============================
+
+This bundle contains FFmpeg 8.1.2, licensed under LGPL version 2.1 or later,
+and source correspondence material under `provenance/`. FFmpeg source and any
+local changes are distributed with the binary bundle. The exact configure line
+is in `provenance/buildconf.txt`.
+
+This bundle contains libvpx 1.16.0 and Opus 1.6.1, each under the BSD 3-Clause
+license. Their source archives and license texts are included in the bundle.
+
+Where enabled on Linux or Windows, `nv-codec-headers` supplies declarations for
+NVIDIA's NVENC/NVDEC hardware APIs. Those headers are an interface to an
+externally installed NVIDIA driver; they are not FFmpeg GPL code and do not
+change this bundle's `--disable-gpl --disable-nonfree` policy. NVIDIA driver,
+SDK, and redistribution terms remain independent obligations for the
+distributor and are not granted by this notice.
+
+FFmpeg is a trademark of Fabrice Bellard. See https://ffmpeg.org/legal.html for
+FFmpeg's LGPL compliance checklist and legal considerations.

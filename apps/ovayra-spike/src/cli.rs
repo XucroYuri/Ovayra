@@ -51,6 +51,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: PlatformCommand,
     },
+    Release {
+        #[command(subcommand)]
+        command: ReleaseCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -153,6 +157,17 @@ pub(crate) enum PlatformCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum ReleaseCommand {
+    /// Verify an `FFmpeg` bundle's source, license, checksum, SBOM, and executable correspondence.
+    VerifyFfmpeg {
+        #[arg(long, env = "OVAYRA_FFMPEG_BUNDLE")]
+        bundle: PathBuf,
+        #[arg(long)]
+        evidence: PathBuf,
+    },
+}
+
 fn parse_hardware_backend(input: &str) -> Result<Backend, String> {
     let backend = input.parse::<Backend>().map_err(str::to_owned)?;
     if backend.is_cpu() {
@@ -167,7 +182,27 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Cli, Command, GeminiCommand, MediaCommand, PlatformCommand};
+    use super::{Cli, Command, GeminiCommand, MediaCommand, PlatformCommand, ReleaseCommand};
+
+    #[test]
+    fn parses_the_fail_closed_ffmpeg_bundle_verification_contract() {
+        let cli = Cli::try_parse_from([
+            "ovayra-spike",
+            "release",
+            "verify-ffmpeg",
+            "--bundle",
+            "bundle",
+            "--evidence",
+            "evidence.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Release {
+                command: ReleaseCommand::VerifyFfmpeg { .. }
+            }
+        ));
+    }
 
     #[test]
     fn parses_the_keyring_smoke_evidence_contract() {

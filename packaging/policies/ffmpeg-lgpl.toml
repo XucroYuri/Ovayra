@@ -1,0 +1,29 @@
+# This is a distribution policy, not a statement that every FFmpeg build is LGPL-only.
+[policy]
+name = "ovayra-ffmpeg-lgpl-only"
+ffmpeg_version = "8.1.2"
+license = "LGPL-2.1-or-later"
+
+[configure]
+required = [
+  "--disable-autodetect", "--disable-debug", "--disable-doc", "--disable-ffplay",
+  "--disable-network", "--enable-ffmpeg", "--enable-ffprobe", "--enable-libopus",
+  "--enable-libvpx", "--enable-version3", "--disable-gpl", "--disable-nonfree",
+]
+forbidden = ["--enable-gpl", "--enable-nonfree"]
+
+[material]
+required = [
+  "provenance/ffmpeg-8.1.2.tar.xz", "provenance/ffmpeg-8.1.2.tar.xz.asc",
+  "provenance/libvpx-source.tar.zst", "provenance/opus-source.tar.zst",
+  "provenance/buildconf.txt", "provenance/changes.diff", "provenance/SHA256SUMS",
+  "LICENSES/FFmpeg-LGPL-2.1-or-later.txt", "LICENSES/libvpx-BSD-3-Clause.txt",
+  "LICENSES/Opus-BSD-3-Clause.txt", "NOTICE.txt", "sbom/ffmpeg.cdx.json",
+]
+
+[nvcodec]
+# NVENC/NVDEC hardware API headers are a separately distributed interface layer. Their use does
+# not itself enable FFmpeg GPL code. Driver/SDK terms and redistribution obligations remain
+# separate release checks; the build must still retain --disable-gpl and --disable-nonfree.
+allowed_targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+requires_notice = true

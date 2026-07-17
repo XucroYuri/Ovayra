@@ -1,0 +1,125 @@
+name: phase-0-ffmpeg
+
+on:
+  pull_request:
+    paths: ["packaging/**", "scripts/build-ffmpeg-*", "crates/spike-release/**", "apps/ovayra-spike/**", ".github/workflows/phase-0-ffmpeg.yml"]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-twice:
+    name: ${{ matrix.target.id }} native provenance build
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { id: macos-arm64-vt, runner: macos-14, triple: aarch64-apple-darwin, script: scripts/build-ffmpeg-macos.sh }
+          - { id: windows-x64-mf, runner: windows-2025, triple: x86_64-pc-windows-msvc, script: scripts/build-ffmpeg-windows.ps1 }
+          - { id: linux-x64-vaapi-wayland, runner: ubuntu-24.04, triple: x86_64-unknown-linux-gnu, script: scripts/build-ffmpeg-linux.sh }
+    runs-on: ${{ matrix.target.runner }}
+    env:
+      OVAYRA_TARGET_ID: ${{ matrix.target.id }}
+      FFMPEG_URL: https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz
+      FFMPEG_ASC_URL: https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz.asc
+      FFMPEG_KEY_URL: https://ffmpeg.org/ffmpeg-devel.asc
+      LIBVPX_REPOSITORY: https://github.com/webmproject/libvpx.git
+      OPUS_REPOSITORY: https://github.com/xiph/opus.git
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native build prerequisites (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install --yes build-essential pkg-config nasm yasm zstd libdrm-dev libva-dev libnuma-dev
+      - name: Install native build prerequisites (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: brew install nasm pkg-config zstd
+      - name: Install native build prerequisites (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install --no-progress --yes make nasm pkgconfiglite zstd
+      - name: Verify FFmpeg detached release signature and exact sources (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/ffmpeg-source
+          curl --fail --location --proto '=https' --tlsv1.2 -o target/ffmpeg-source/ffmpeg-8.1.2.tar.xz "$FFMPEG_URL"
+          curl --fail --location --proto '=https' --tlsv1.2 -o target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc "$FFMPEG_ASC_URL"
+          curl --fail --location --proto '=https' --tlsv1.2 "$FFMPEG_KEY_URL" | gpg --batch --import
+          gpg --batch --fingerprint FCF986EA15E6E293A5644F10B4322F04D67658D8
+          gpg --batch --verify target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc target/ffmpeg-source/ffmpeg-8.1.2.tar.xz
+          test "$(shasum -a 256 target/ffmpeg-source/ffmpeg-8.1.2.tar.xz | awk '{print $1}')" = 8c56e9c1a92e833d00caf16975ae6b67c571a1f6949321262ef3d425d816d2a8
+          git clone --depth 1 --branch v1.16.0 "$LIBVPX_REPOSITORY" target/ffmpeg-source/libvpx
+          test "$(git -C target/ffmpeg-source/libvpx rev-parse HEAD)" = 1024874c5919305883187e2953de8fcb4c3d7fa6
+          git clone --depth 1 --branch v1.6.1 "$OPUS_REPOSITORY" target/ffmpeg-source/opus
+          test "$(git -C target/ffmpeg-source/opus rev-parse HEAD)" = 22244de5a79bd1d6d623c32e72bf1954b56235be
+          git clone --depth 1 --branch n8.1.2 https://github.com/FFmpeg/FFmpeg.git target/ffmpeg-source/ffmpeg
+          test "$(git -C target/ffmpeg-source/ffmpeg rev-parse HEAD)" = 38b88335f99e76ed89ff3c93f877fdefce736c13
+          export SOURCE_DATE_EPOCH="$(git -C target/ffmpeg-source/ffmpeg log -1 --format=%ct)"
+          printf '%s\n' "$SOURCE_DATE_EPOCH" > target/ffmpeg-source/source-date-epoch
+          git -C target/ffmpeg-source/libvpx archive --format=tar HEAD | zstd -T0 -o target/ffmpeg-source/libvpx-source.tar.zst
+          git -C target/ffmpeg-source/opus archive --format=tar HEAD | zstd -T0 -o target/ffmpeg-source/opus-source.tar.zst
+      - name: Verify FFmpeg detached release signature and exact sources (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force target/ffmpeg-source | Out-Null
+          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile target/ffmpeg-source/ffmpeg-8.1.2.tar.xz
+          Invoke-WebRequest -Uri $env:FFMPEG_ASC_URL -OutFile target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc
+          Invoke-WebRequest -Uri $env:FFMPEG_KEY_URL -OutFile target/ffmpeg-source/ffmpeg-devel.asc
+          gpg --batch --import target/ffmpeg-source/ffmpeg-devel.asc
+          gpg --batch --fingerprint FCF986EA15E6E293A5644F10B4322F04D67658D8
+          gpg --batch --verify target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc target/ffmpeg-source/ffmpeg-8.1.2.tar.xz
+          if ((Get-FileHash target/ffmpeg-source/ffmpeg-8.1.2.tar.xz -Algorithm SHA256).Hash.ToLower() -ne '8c56e9c1a92e833d00caf16975ae6b67c571a1f6949321262ef3d425d816d2a8') { throw 'FFmpeg hash mismatch' }
+          git clone --depth 1 --branch v1.16.0 $env:LIBVPX_REPOSITORY target/ffmpeg-source/libvpx
+          if ((git -C target/ffmpeg-source/libvpx rev-parse HEAD) -ne '1024874c5919305883187e2953de8fcb4c3d7fa6') { throw 'libvpx tag mismatch' }
+          git clone --depth 1 --branch v1.6.1 $env:OPUS_REPOSITORY target/ffmpeg-source/opus
+          if ((git -C target/ffmpeg-source/opus rev-parse HEAD) -ne '22244de5a79bd1d6d623c32e72bf1954b56235be') { throw 'Opus tag mismatch' }
+          git clone --depth 1 --branch n8.1.2 https://github.com/FFmpeg/FFmpeg.git target/ffmpeg-source/ffmpeg
+          if ((git -C target/ffmpeg-source/ffmpeg rev-parse HEAD) -ne '38b88335f99e76ed89ff3c93f877fdefce736c13') { throw 'FFmpeg tag mismatch' }
+          $env:SOURCE_DATE_EPOCH = git -C target/ffmpeg-source/ffmpeg log -1 --format=%ct
+          $env:SOURCE_DATE_EPOCH | Set-Content target/ffmpeg-source/source-date-epoch -NoNewline
+          git -C target/ffmpeg-source/libvpx archive --format=tar HEAD | zstd -T0 -o target/ffmpeg-source/libvpx-source.tar.zst
+          git -C target/ffmpeg-source/opus archive --format=tar HEAD | zstd -T0 -o target/ffmpeg-source/opus-source.tar.zst
+      - name: Build clean bundle A and B, validate policy, capabilities, and CPU smoke (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(cat target/ffmpeg-source/source-date-epoch)"
+          for build in a b; do
+            work="target/ffmpeg-$build"; rm -rf "$work"; mkdir -p "$work"; cp -R target/ffmpeg-source "$work/source"
+            bash "${{ matrix.target.script }}" --source-root "$work/source" --dependency-prefix "$work/deps" --stage-root "$work/stage" --parallelism "$(getconf _NPROCESSORS_ONLN || sysctl -n hw.ncpu)"
+            "$work/stage/bin/ffmpeg" -hide_banner -hwaccels; "$work/stage/bin/ffmpeg" -hide_banner -decoders; "$work/stage/bin/ffmpeg" -hide_banner -encoders; "$work/stage/bin/ffmpeg" -hide_banner -filters
+            "$work/stage/bin/ffmpeg" -f lavfi -i testsrc2=size=320x180:rate=30 -f lavfi -i sine=frequency=1000 -t 10 -c:v libvpx-vp9 -c:a libopus "$work/input.webm"
+            cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg "$work/stage/bin/ffmpeg" --ffprobe "$work/stage/bin/ffprobe" --output "$work/fallback.webm" --evidence "$work/cpu-evidence.json"
+            cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$work/stage" --evidence "docs/phase-0/evidence/ffmpeg-bundle-${OVAYRA_TARGET_ID}-$build.json"
+          done
+          diff -ru --exclude .ovayra-target target/ffmpeg-a/stage target/ffmpeg-b/stage
+      - name: Build clean bundle A and B, validate policy, capabilities, and CPU smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:SOURCE_DATE_EPOCH = Get-Content target/ffmpeg-source/source-date-epoch -Raw
+          foreach ($build in 'a', 'b') {
+            $work = "target/ffmpeg-$build"; New-Item -ItemType Directory -Force $work | Out-Null; Copy-Item target/ffmpeg-source "$work/source" -Recurse
+            & scripts/build-ffmpeg-windows.ps1 -SourceRoot "$work/source" -DependencyPrefix "$work/deps" -StageRoot "$work/stage" -Parallelism $env:NUMBER_OF_PROCESSORS
+            & "$work/stage/bin/ffmpeg.exe" -hide_banner -hwaccels; & "$work/stage/bin/ffmpeg.exe" -hide_banner -decoders; & "$work/stage/bin/ffmpeg.exe" -hide_banner -encoders; & "$work/stage/bin/ffmpeg.exe" -hide_banner -filters
+            & "$work/stage/bin/ffmpeg.exe" -f lavfi -i testsrc2=size=320x180:rate=30 -f lavfi -i sine=frequency=1000 -t 10 -c:v libvpx-vp9 -c:a libopus "$work/input.webm"
+            cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg "$work/stage/bin/ffmpeg.exe" --ffprobe "$work/stage/bin/ffprobe.exe" --output "$work/fallback.webm" --evidence "$work/cpu-evidence.json"
+            cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$work/stage" --evidence "docs/phase-0/evidence/ffmpeg-bundle-$env:OVAYRA_TARGET_ID-$build.json"
+          }
+          if ((Compare-Object (Get-ChildItem target/ffmpeg-a/stage -Recurse -File | Get-FileHash) (Get-ChildItem target/ffmpeg-b/stage -Recurse -File | Get-FileHash)).Count -ne 0) { throw 'reproducibility comparison failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ffmpeg-${{ matrix.target.id }}-reports
+          path: |
+            docs/phase-0/evidence/ffmpeg-bundle-*.json
+            target/ffmpeg-*/stage/provenance/**
+            target/ffmpeg-*/cpu-evidence.json

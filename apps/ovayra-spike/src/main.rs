@@ -22,9 +22,10 @@ use spike_media::{
 use spike_platform::{
     EncryptedRecord, EnvelopeCipher, OsSecretStore, SecretStore, SecretStoreError,
 };
+use spike_release::FfmpegBundle;
 use zeroize::Zeroizing;
 
-use crate::cli::{Cli, Command, GeminiCommand, MediaCommand, PlatformCommand};
+use crate::cli::{Cli, Command, GeminiCommand, MediaCommand, PlatformCommand, ReleaseCommand};
 use crate::gemini_orchestration::{ResumeRequest, resume_analyze_with_evidence, write_atomic};
 
 const UPLOAD_CHECKPOINT_ACCOUNT: &str = "phase-0-upload-checkpoint-v1";
@@ -146,7 +147,37 @@ fn main() -> Result<()> {
             &evidence,
             evidence_target()?,
         )?,
+        Command::Release {
+            command: ReleaseCommand::VerifyFfmpeg { bundle, evidence },
+        } => verify_ffmpeg_bundle(&bundle, &evidence, evidence_target()?)?,
     }
+    Ok(())
+}
+
+fn verify_ffmpeg_bundle(bundle: &Path, evidence_path: &Path, target: TargetId) -> Result<()> {
+    let started = Instant::now();
+    let result = FfmpegBundle::validate(bundle);
+    let mut evidence = Evidence::new(SpikeId::Distribution, target);
+    evidence.measure(
+        "bundle_validation",
+        if result.is_ok() { "pass" } else { "fail" },
+    )?;
+    evidence.measure("license_policy", "LGPL-only")?;
+    evidence.measure(
+        "source_correspondence",
+        if result.is_ok() { "pass" } else { "fail" },
+    )?;
+    evidence.finish(
+        if result.is_ok() {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        },
+        duration_ms(started),
+    );
+    write_finished_evidence(evidence_path, &evidence)?;
+    result.context("FFmpeg bundle policy validation failed")?;
+    println!("FFMPEG_BUNDLE=PASS license=LGPL-only source_correspondence=PASS");
     Ok(())
 }
 
