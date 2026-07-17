@@ -10,7 +10,9 @@ use anyhow::Result;
 use serde::de::{self, Error as _, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use sha2::{Digest, Sha256};
-use spike_contracts::{Evidence, PhaseZeroProof, SpikeId, TargetId, Verdict};
+use spike_contracts::{
+    Evidence, PhaseZeroProof, PreviewProof, ProofComponent, ProofPayload, TargetId,
+};
 use unicode_normalization::UnicodeNormalization;
 
 const MAX_FILE_BYTES: u64 = 1_048_576;
@@ -195,75 +197,40 @@ pub(crate) fn lint_verified(directory: &Path, text_mode: bool) -> Result<Vec<Ver
     Ok(verified)
 }
 
-/// Validates the documented desktop preview threshold from parsed `Evidence`,
-/// never from a human-oriented console line.
+/// Validates the documented desktop preview threshold from a strict schema-v2
+/// `Preview` proof, never from generic measurements or a console line.
 pub(crate) fn verify_preview(file: &Path, expected_target: &str) -> Result<()> {
     let contents = fs::read_to_string(file).map_err(|_| LintError::new(".", Category::Io))?;
-    let evidence = Evidence::from_json(&contents)
+    let proof = PhaseZeroProof::from_json(&contents)
         .map_err(|_| LintError::new(".", Category::InvalidEvidence))?;
     let expected_target = TargetId::new(expected_target)
         .map_err(|_| anyhow::anyhow!("expected target must be a supported Phase 0 target"))?;
-    if evidence.spike() != SpikeId::Preview
-        || evidence.verdict() != Some(Verdict::Pass)
-        || evidence.target() != &expected_target
-    {
+    if proof.component != ProofComponent::Preview || proof.row.target != expected_target {
         anyhow::bail!("preview evidence did not report pass");
     }
-    let measurements = evidence.measurements();
-    let observed_milli_fps = measurement_u64(measurements, "observed_milli_fps")?;
-    let requested_duration_seconds = measurement_u64(measurements, "requested_duration_seconds")?;
-    let measured_elapsed_ms = measurement_u64(measurements, "measured_elapsed_ms")?;
-    let frames_read = measurement_u64(measurements, "frames_read")?;
-    let frames_applied = measurement_u64(measurements, "frames_applied")?;
-    let p95_ms = measurement_u64(measurements, "p95_ms")?;
-    let rss_growth_mib = measurement_u64(measurements, "rss_growth_mib")?;
-    let hidden = measurement_bool(measurements, "automation_hide")?;
-    let restored = measurement_bool(measurements, "automation_restore")?;
-    let samples_complete = measurement_bool(measurements, "rss_samples_complete")?;
-    let event_loop_errors = measurement_u64(measurements, "event_loop_errors")?;
-    let preview_stream_errors = measurement_u64(measurements, "preview_stream_errors")?;
-    if !(23_000..=25_000).contains(&observed_milli_fps)
-        || requested_duration_seconds != 120
-        || measured_elapsed_ms < 120_000
-        || evidence.duration_ms().unwrap_or(0) < 120_000
-        || frames_read == 0
-        || frames_applied == 0
-        || !hidden
-        || !restored
-        || p95_ms > 100
-        || rss_growth_mib > 64
-        || !samples_complete
-        || event_loop_errors != 0
-        || preview_stream_errors != 0
-    {
+    let ProofPayload::Preview(value) = proof.proof else {
+        anyhow::bail!("preview evidence did not contain a preview proof");
+    };
+    if !preview_accepted(&value) {
         anyhow::bail!("preview evidence did not meet the documented threshold");
     }
     println!("PREVIEW_EVIDENCE=PASS");
     Ok(())
 }
 
-fn measurement_u64(
-    measurements: &std::collections::BTreeMap<String, serde_json::Value>,
-    name: &str,
-) -> Result<u64> {
-    measurements
-        .get(name)
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| {
-            anyhow::anyhow!("preview evidence is missing a required numeric measurement")
-        })
-}
-
-fn measurement_bool(
-    measurements: &std::collections::BTreeMap<String, serde_json::Value>,
-    name: &str,
-) -> Result<bool> {
-    measurements
-        .get(name)
-        .and_then(serde_json::Value::as_bool)
-        .ok_or_else(|| {
-            anyhow::anyhow!("preview evidence is missing a required boolean measurement")
-        })
+fn preview_accepted(value: &PreviewProof) -> bool {
+    value.requested_duration_ms == 120_000
+        && value.measured_duration_ms >= 120_000
+        && (23_000..=25_000).contains(&value.milli_fps)
+        && value.p95_ms <= 100
+        && value.rss_growth_mib <= 64
+        && value.frames_read > 0
+        && value.frames_applied > 0
+        && value.frames_applied + value.frames_dropped <= value.frames_read
+        && value.hidden
+        && value.restored
+        && value.event_loop_errors == 0
+        && value.stream_errors == 0
 }
 
 fn collect_regular_files(

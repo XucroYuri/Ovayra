@@ -13,3 +13,4 @@ rg -F --quiet 'ffmpeg-repro-' .github/workflows/phase-0-ffmpeg.yml
 rg -F --quiet 'release prove-package' .github/workflows/phase-0-release.yml
 rg -F --quiet 'release prove-update' .github/workflows/phase-0-release.yml
 rg -F --quiet 'gemini-3.1-flash-lite' .github/workflows/phase-0-device.yml
+rg -F --quiet 'platform checkpoint --evidence' .github/workflows/phase-0-device.yml

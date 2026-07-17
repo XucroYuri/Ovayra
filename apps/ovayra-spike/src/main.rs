@@ -27,7 +27,8 @@ use spike_contracts::{
     MediaHardwareProof, PhaseZeroProof, PlatformKeyringProof, SpikeId, TargetId, Verdict,
 };
 use spike_contracts::{
-    PlatformProcessProof, ProofComponent, ProofPayload, ProofRow, phase_zero_session,
+    PlatformCheckpointProof, PlatformProcessProof, ProofComponent, ProofPayload, ProofRow,
+    phase_zero_session,
 };
 use spike_gemini::GeminiClient;
 use spike_media::{
@@ -167,6 +168,9 @@ fn main() -> Result<()> {
         Command::Platform {
             command: PlatformCommand::Keyring { evidence },
         } => keyring_smoke(&OsSecretStore, &evidence, &evidence_target()?)?,
+        Command::Platform {
+            command: PlatformCommand::Checkpoint { evidence },
+        } => checkpoint_smoke(&OsSecretStore, &evidence, &evidence_target()?)?,
         Command::Platform {
             command: PlatformCommand::Process { evidence },
         } => process_smoke(&evidence, &evidence_target()?)?,
@@ -784,6 +788,69 @@ fn sha256_hex(bytes: &[u8]) -> String {
     output
 }
 
+fn checkpoint_smoke<Store: SecretStore>(
+    store: &Store,
+    evidence_path: &Path,
+    target: &TargetId,
+) -> Result<()> {
+    let account = format!(
+        "phase-0-checkpoint-smoke-{}",
+        content_sha256_bytes(&<[u8; 32]>::generate())
+    );
+    let sentinel = b"phase-0-disposable-checkpoint-sentinel";
+    let associated_data = target.as_str().as_bytes();
+    let result = (|| -> Result<bool> {
+        let cipher = EnvelopeCipher::load_or_create(store, &account)?;
+        let record = cipher.seal(sentinel, associated_data)?;
+        let serialized = serde_json::to_vec(&record)?;
+        let reopened = cipher.open(&record, associated_data)?;
+        let wrong_aad_rejected = cipher.open(&record, b"wrong-associated-data").is_err();
+        let mut tampered = record.clone();
+        if let Some(byte) = tampered.ciphertext.first_mut() {
+            *byte ^= 1;
+        }
+        let tamper_rejected = cipher.open(&tampered, associated_data).is_err();
+        Ok(reopened == sentinel
+            && !serialized
+                .windows(sentinel.len())
+                .any(|window| window == sentinel)
+            && wrong_aad_rejected
+            && tamper_rejected
+            && record.version == 1
+            && record.nonce.len() == 12
+            && !record.ciphertext.is_empty()
+            && record.ciphertext.len() <= 16 * 1024)
+    })();
+    let cleanup = store.delete("com.ovayra.desktop", &account).and_then(|()| {
+        match store.get("com.ovayra.desktop", &account)? {
+            None => Ok(()),
+            Some(_) => Err(SecretStoreError::Rejected),
+        }
+    });
+    let passed = result.as_ref().is_ok_and(|value| *value) && cleanup.is_ok();
+    let proof = PhaseZeroProof::record(
+        ProofComponent::PlatformCheckpoint,
+        ProofRow {
+            spike: SpikeId::Platform,
+            target: target.clone(),
+            session: phase_zero_session(target).map(str::to_owned),
+            backend: None,
+        },
+        ProofPayload::PlatformCheckpoint(PlatformCheckpointProof {
+            encrypted: passed,
+            plaintext_absent: passed,
+        }),
+    );
+    write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)?;
+    result?;
+    cleanup?;
+    if !passed {
+        anyhow::bail!("checkpoint encryption checks failed");
+    }
+    println!("CHECKPOINT=PASS");
+    Ok(())
+}
+
 fn process_smoke(evidence_path: &Path, target: &TargetId) -> Result<()> {
     let executable = std::env::current_exe()?;
     let executable = executable.to_string_lossy().into_owned();
@@ -1372,8 +1439,8 @@ mod tests {
     use spike_platform::MemorySecretStore;
 
     use super::{
-        evidence_target_from_values, ffmpeg_tree_tuples, ffmpeg_tuple_digest, keyring_smoke,
-        write_evidence_atomic,
+        checkpoint_smoke, evidence_target_from_values, ffmpeg_tree_tuples, ffmpeg_tuple_digest,
+        keyring_smoke, write_evidence_atomic,
     };
 
     #[test]
@@ -1424,6 +1491,23 @@ mod tests {
         assert!(evidence.contains("\"missing_after_delete\": true"));
         assert!(!evidence.contains("account"));
         assert!(!evidence.contains("secret"));
+    }
+
+    #[test]
+    fn checkpoint_smoke_seals_authenticates_and_cleans_up_a_disposable_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let evidence = directory.path().join("checkpoint.json");
+        checkpoint_smoke(
+            &MemorySecretStore::default(),
+            &evidence,
+            &TargetId::new("macos-arm64-vt").unwrap(),
+        )
+        .unwrap();
+        let proof = fs::read_to_string(evidence).unwrap();
+        assert!(proof.contains("\"component\": \"platform_checkpoint\""));
+        assert!(proof.contains("\"encrypted\": true"));
+        assert!(proof.contains("\"plaintext_absent\": true"));
+        assert!(!proof.contains("disposable-checkpoint-sentinel"));
     }
 
     #[test]

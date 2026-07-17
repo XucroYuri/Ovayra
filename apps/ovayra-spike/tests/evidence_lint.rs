@@ -6,6 +6,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use spike_contracts::{PhaseZeroProof, PreviewProof, TargetId};
+
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture {
@@ -213,10 +215,27 @@ fn lint_fails_closed_for_missing_directories_and_non_regular_paths() {
 #[test]
 fn preview_verifier_requires_typed_measurements_instead_of_console_output() {
     let fixture = Fixture::new();
-    fixture.write(
-        "preview.json",
-        r#"{"schema_version":1,"spike":"preview","target":"macos-arm64-vt","verdict":"pass","duration_ms":120000,"measurements":{"observed_milli_fps":24000,"requested_duration_seconds":120,"measured_elapsed_ms":120000,"frames_read":2880,"frames_applied":2880,"automation_hide":true,"automation_restore":true,"p95_ms":100,"rss_growth_mib":64,"rss_samples_complete":true,"event_loop_errors":0,"preview_stream_errors":0},"observations":[]}"#,
+    let target = TargetId::new("macos-arm64-vt").unwrap();
+    let proof = PhaseZeroProof::preview(
+        &target,
+        "production-test",
+        &PreviewProof {
+            requested_duration_ms: 120_000,
+            measured_duration_ms: 120_000,
+            milli_fps: 24_000,
+            p95_ms: 100,
+            rss_growth_mib: 64,
+            frames_read: 2_880,
+            frames_applied: 2_880,
+            frames_dropped: 0,
+            hidden: true,
+            restored: true,
+            event_loop_errors: 0,
+            stream_errors: 0,
+            renderer: "production-test".to_owned(),
+        },
     );
+    fixture.write("preview.json", &proof.to_pretty_json().unwrap());
     let output = Command::new(env!("CARGO_BIN_EXE_ovayra-spike"))
         .args([
             "evidence",

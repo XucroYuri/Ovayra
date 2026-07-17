@@ -141,6 +141,7 @@ jobs:
           cargo run --locked -p ovayra-spike -- platform tray --automation --evidence "docs/phase-0/evidence/tray-$OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- platform tray --automation --force-no-tray --evidence "docs/phase-0/evidence/tray-fallback-$OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- platform keyring --evidence "docs/phase-0/evidence/keyring-$OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- platform checkpoint --evidence "docs/phase-0/evidence/checkpoint-$OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- platform process --evidence "docs/phase-0/evidence/process-$OVAYRA_TARGET_ID.json"
       - name: Run the exact 120-second preview and typed threshold gate (Windows)
         if: runner.os == 'Windows'
@@ -152,6 +153,7 @@ jobs:
           cargo run --locked -p ovayra-spike -- platform tray --automation --evidence "docs/phase-0/evidence/tray-$env:OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- platform tray --automation --force-no-tray --evidence "docs/phase-0/evidence/tray-fallback-$env:OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- platform keyring --evidence "docs/phase-0/evidence/keyring-$env:OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- platform checkpoint --evidence "docs/phase-0/evidence/checkpoint-$env:OVAYRA_TARGET_ID.json"
           cargo run --locked -p ovayra-spike -- platform process --evidence "docs/phase-0/evidence/process-$env:OVAYRA_TARGET_ID.json"
       - name: Scan any package or notarization logs as bounded text (POSIX)
         if: runner.os != 'Windows'

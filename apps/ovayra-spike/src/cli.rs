@@ -184,6 +184,11 @@ pub(crate) enum PlatformCommand {
         #[arg(long)]
         evidence: PathBuf,
     },
+    /// Exercise encrypted checkpoint sealing, authentication, and disposable key cleanup.
+    Checkpoint {
+        #[arg(long)]
+        evidence: PathBuf,
+    },
     /// Exercise close-to-tray callbacks, explicit quit, and the no-tray fallback.
     Tray {
         #[arg(long)]
@@ -482,6 +487,24 @@ mod tests {
             cli.command,
             Command::Platform {
                 command: PlatformCommand::Keyring { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_the_checkpoint_smoke_evidence_contract() {
+        let cli = Cli::try_parse_from([
+            "ovayra-spike",
+            "platform",
+            "checkpoint",
+            "--evidence",
+            "checkpoint.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Platform {
+                command: PlatformCommand::Checkpoint { .. }
             }
         ));
     }

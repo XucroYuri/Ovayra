@@ -225,6 +225,7 @@ impl PhaseZeroMatrix {
             }
         }
         validate_distribution_relationships(proofs, &self.required)?;
+        validate_gemini_relationships(proofs, &self.required)?;
         Ok(())
     }
 
@@ -305,6 +306,43 @@ impl PhaseZeroMatrix {
         }
         Ok(())
     }
+}
+
+fn validate_gemini_relationships(
+    proofs: &[PhaseZeroProof],
+    required: &[RequiredEvidence],
+) -> Result<(), MatrixError> {
+    for row in required.iter().filter(|row| row.id == SpikeId::Gemini) {
+        let stage = proofs.iter().find(|proof| {
+            proof.component == ProofComponent::GeminiStage && proof.row.target == row.target
+        });
+        let resume = proofs.iter().find(|proof| {
+            proof.component == ProofComponent::GeminiResume && proof.row.target == row.target
+        });
+        let (
+            Some(PhaseZeroProof {
+                proof: ProofPayload::GeminiStage(stage),
+                ..
+            }),
+            Some(PhaseZeroProof {
+                proof: ProofPayload::GeminiResume(resume),
+                ..
+            }),
+        ) = (stage, resume)
+        else {
+            continue;
+        };
+        if stage.checkpoint_id != resume.checkpoint_id
+            || resume.resumed_offset < stage.staged_offset
+            || resume.server_offset < resume.resumed_offset
+            || !resume.server_authoritative
+        {
+            return Err(MatrixError::Requirement(
+                "gemini stage/resume relationship".to_owned(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn required_components(required: &RequiredEvidence) -> &'static [ProofComponent] {

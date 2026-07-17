@@ -366,7 +366,23 @@ fn file_backed_gate_rejects_missing_duplicate_unmatched_and_non_v2_proofs() {
                 else {
                     unreachable!();
                 };
-                value.remote_state = "DELETED".to_owned();
+                value.checkpoint_id = "unrelated-checkpoint".to_owned();
+                write_proofs(dir, proofs);
+            }),
+        ),
+        (
+            "gemini-offset",
+            Box::new(|dir, proofs| {
+                let Some(PhaseZeroProof {
+                    proof: ProofPayload::GeminiResume(value),
+                    ..
+                }) = proofs
+                    .iter_mut()
+                    .find(|proof| proof.component == ProofComponent::GeminiResume)
+                else {
+                    unreachable!();
+                };
+                value.resumed_offset = 1;
                 write_proofs(dir, proofs);
             }),
         ),
