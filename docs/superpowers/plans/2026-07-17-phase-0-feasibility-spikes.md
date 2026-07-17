@@ -950,16 +950,14 @@ ovayra-spike preview --ffmpeg "$OVAYRA_FFMPEG" --input target/phase-0/fallback.w
 
 Automation starts the stream, hides and restores the window while the tray remains alive, then exits after 120 seconds. It records frames read/applied/dropped, p50/p95/p99 enqueue-to-apply latency, RSS at 20 and 120 seconds, renderer/backend, hide/restore outcome, and event-loop errors.
 
-- [ ] **Step 6: Run tests and the live desktop gate**
+- [ ] **Step 6: Run deterministic tests and validate the live-command contract**
 
 ```bash
 cargo test -p spike-media --test preview_frames
-cargo run -p ovayra-spike -- preview --ffmpeg "$OVAYRA_FFMPEG" \
-  --input target/phase-0/fallback.webm --duration-seconds 120 --automation \
-  --evidence "docs/phase-0/evidence/preview-$OVAYRA_TARGET_ID.json"
+cargo run -p ovayra-spike -- preview --help
 ```
 
-Expected final line starts with `PREVIEW=PASS fps=24` and reports numeric `p95_ms` no greater than `100` plus numeric `rss_growth_mib` no greater than `64`.
+Expected: deterministic tests and the command contract compile. The pinned-bundle, 120-second interactive desktop acceptance run is intentionally deferred to Task 12, after Task 10 has built and provisioned the required FFmpeg bundle.
 
 - [ ] **Step 7: Commit**
 
@@ -1614,7 +1612,16 @@ The Linux dependency step installs the compiler/linker packages plus Fontconfig,
 
 - [ ] **Step 2: Add the protected self-hosted device matrix**
 
-`phase-0-device.yml` is `workflow_dispatch` plus protected `main` branch execution. Its matrix maps the six evidence IDs to explicit self-hosted labels. It runs CPU fallback, applicable hardware backend, preview, tray normal/fallback, keyring, process cancellation, and—only in the protected `gemini-smoke` environment—the two-process Gemini gate.
+`phase-0-device.yml` is `workflow_dispatch` plus protected `main` branch execution. Its matrix maps the six evidence IDs to explicit self-hosted labels. After Task 10 provisions the pinned FFmpeg bundle, it runs CPU fallback, applicable hardware backend, the required 120-second interactive desktop preview command, tray normal/fallback, keyring, process cancellation, and—only in the protected `gemini-smoke` environment—the two-process Gemini gate.
+
+The preview job must run:
+
+```text
+ovayra-spike preview --ffmpeg "$OVAYRA_FFMPEG" --input target/phase-0/fallback.webm \
+  --duration-seconds 120 --automation --evidence "docs/phase-0/evidence/preview-$OVAYRA_TARGET_ID.json"
+```
+
+It accepts evidence only when `PREVIEW=PASS` reports measured FPS within the documented 23–25 FPS tolerance, the full requested duration, successful hide/restore, `p95_ms <= 100`, and `rss_growth_mib <= 64`.
 
 Each device job sets only non-secret identifiers in ordinary environment variables:
 

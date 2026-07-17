@@ -28,11 +28,5 @@ tracing-subscriber.workspace = true
 [build-dependencies]
 slint-build.workspace = true
 
-[lints.rust]
-# Slint's generated UI module carries internal `allow(unsafe_code)` attributes.
-# The app's handwritten modules remain `unsafe`-free.
-unsafe_code = "allow"
-
-[lints.clippy]
-all = "deny"
-pedantic = "warn"
+[lints]
+workspace = true
