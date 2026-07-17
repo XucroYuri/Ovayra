@@ -1,0 +1,211 @@
+name: phase-0-device
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      producer_run_id:
+        description: "Successful same-SHA phase-0-ffmpeg producer run ID (required for manual runs)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  core:
+    name: ${{ matrix.target_id }} real-device core
+    runs-on: ${{ fromJSON(matrix.labels) }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target_id: macos-arm64-vt, backend: videotoolbox, session: aqua, bundle: ffmpeg-macos-arm64-vt-bundle, labels: '["self-hosted","ovayra","macos-arm64-vt","aqua"]' }
+          - { target_id: windows-x64-mf, backend: d3d11va-mf, session: windows, bundle: ffmpeg-windows-x64-mf-bundle, labels: '["self-hosted","ovayra","windows-x64-mf","desktop"]' }
+          - { target_id: windows-x64-nvidia, backend: nvenc-nvdec, session: windows, bundle: ffmpeg-windows-x64-mf-bundle, labels: '["self-hosted","ovayra","windows-x64-nvidia","desktop"]' }
+          - { target_id: linux-x64-vaapi-wayland, backend: vaapi, session: wayland, bundle: ffmpeg-linux-x64-vaapi-wayland-bundle, labels: '["self-hosted","ovayra","linux-x64-vaapi-wayland","wayland"]' }
+          - { target_id: linux-x64-vaapi-x11, backend: vaapi, session: x11, bundle: ffmpeg-linux-x64-vaapi-wayland-bundle, labels: '["self-hosted","ovayra","linux-x64-vaapi-x11","x11"]' }
+          - { target_id: linux-x64-nvidia, backend: nvenc-nvdec, session: desktop, bundle: ffmpeg-linux-x64-vaapi-wayland-bundle, labels: '["self-hosted","ovayra","linux-x64-nvidia","desktop"]' }
+    env:
+      OVAYRA_TARGET_ID: ${{ matrix.target_id }}
+      OVAYRA_BACKEND: ${{ matrix.backend }}
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - name: Assert a real Linux desktop user session, never headless SSH
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${SSH_CONNECTION:-}" && test -z "${SSH_TTY:-}"
+          test -n "${XDG_RUNTIME_DIR:-}" && test -n "${DBUS_SESSION_BUS_ADDRESS:-}"
+          case "${{ matrix.session }}" in
+            wayland) test -n "${WAYLAND_DISPLAY:-}" ;;
+            x11) test -n "${DISPLAY:-}" ;;
+            desktop) test -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ;;
+            *) echo 'unknown Linux session label' >&2; exit 1 ;;
+          esac
+      - name: Download and bind the same-SHA Task 10 producer (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE_ARTIFACT: ${{ matrix.bundle }}
+          REQUESTED_RUN_ID: ${{ inputs.producer_run_id }}
+        run: |
+          set -euo pipefail
+          checked_sha="$(git rev-parse HEAD)"
+          if [ "${{ github.event_name }}" = workflow_dispatch ]; then run_id="$REQUESTED_RUN_ID"; else run_id="$(gh run list --workflow phase-0-ffmpeg.yml --commit "$checked_sha" --status success --json databaseId,headSha,event,conclusion --jq '.[] | select(.headSha == env.GITHUB_SHA and .event == "push" and .conclusion == "success") | .databaseId' | head -n 1)"; fi
+          test -n "$run_id" || { echo 'a same-SHA Task 10 producer is required' >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > target-producer.json
+          jq -e --arg repository "$GITHUB_REPOSITORY" --arg sha "$checked_sha" '.name == "phase-0-ffmpeg" and .event == "push" and .conclusion == "success" and .head_repository.full_name == $repository and .head_sha == $sha' target-producer.json >/dev/null
+          rm -f target-producer.json
+          mkdir -p target/phase-0/bundle
+          gh run download "$run_id" --name "$BUNDLE_ARTIFACT" --dir target/phase-0/bundle
+          OVAYRA_FFMPEG="$(find target/phase-0/bundle -type f -name ffmpeg -print -quit)"; OVAYRA_FFPROBE="$(find target/phase-0/bundle -type f -name ffprobe -print -quit)"
+          test -n "$OVAYRA_FFMPEG" && test -n "$OVAYRA_FFPROBE"
+          printf 'OVAYRA_FFMPEG=%s\nOVAYRA_FFPROBE=%s\n' "$OVAYRA_FFMPEG" "$OVAYRA_FFPROBE" >> "$GITHUB_ENV"
+      - name: Download and bind the same-SHA Task 10 producer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE_ARTIFACT: ${{ matrix.bundle }}
+          REQUESTED_RUN_ID: ${{ inputs.producer_run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'; $checkedSha = git rev-parse HEAD
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') { $runId = $env:REQUESTED_RUN_ID } else { $runs = gh run list --workflow phase-0-ffmpeg.yml --commit $checkedSha --status success --json databaseId,headSha,event,conclusion | ConvertFrom-Json; $runId = ($runs | Where-Object { $_.headSha -eq $checkedSha -and $_.event -eq 'push' -and $_.conclusion -eq 'success' } | Select-Object -First 1).databaseId }
+          if ([string]::IsNullOrWhiteSpace($runId)) { throw 'a same-SHA Task 10 producer is required' }
+          $producer = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$runId" | ConvertFrom-Json
+          if ($producer.name -ne 'phase-0-ffmpeg' -or $producer.event -ne 'push' -or $producer.conclusion -ne 'success' -or $producer.head_repository.full_name -ne $env:GITHUB_REPOSITORY -or $producer.head_sha -ne $checkedSha) { throw 'Task 10 producer binding failed' }
+          New-Item -ItemType Directory -Force target/phase-0/bundle | Out-Null; gh run download $runId --name $env:BUNDLE_ARTIFACT --dir target/phase-0/bundle
+          $ffmpeg = Get-ChildItem target/phase-0/bundle -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1; $ffprobe = Get-ChildItem target/phase-0/bundle -Filter ffprobe.exe -File -Recurse | Select-Object -First 1
+          if ($null -eq $ffmpeg -or $null -eq $ffprobe) { throw 'Task 10 bundle is incomplete' }
+          "OVAYRA_FFMPEG=$($ffmpeg.FullName)" | Add-Content $env:GITHUB_ENV; "OVAYRA_FFPROBE=$($ffprobe.FullName)" | Add-Content $env:GITHUB_ENV
+      - name: Validate bundle, CPU fallback, hardware and forced fallback (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$(dirname "$(dirname "$OVAYRA_FFMPEG")")"
+          cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$bundle" --evidence "docs/phase-0/evidence/bundle-$OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --output target/phase-0/fallback.webm --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-cpu.json"
+          render=(); if [ "$OVAYRA_BACKEND" = vaapi ]; then test -e /dev/dri/renderD128; render=(--render-device /dev/dri/renderD128); fi
+          cargo run --locked -p ovayra-spike -- media self-test --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --input target/phase-0/fallback.webm --output target/phase-0/hardware.mp4 "${render[@]}" --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-hardware.json"
+          cargo run --locked -p ovayra-spike -- media forced-fallback --backend "$OVAYRA_BACKEND" --ffmpeg "$OVAYRA_FFMPEG" --ffprobe "$OVAYRA_FFPROBE" --input target/phase-0/fallback.webm --output target/phase-0/forced-fallback.webm --evidence "docs/phase-0/evidence/media-$OVAYRA_TARGET_ID-forced.json"
+      - name: Validate bundle, CPU fallback, hardware and forced fallback (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'; $bundle = Split-Path (Split-Path $env:OVAYRA_FFMPEG -Parent) -Parent
+          cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle $bundle --evidence "docs/phase-0/evidence/bundle-$env:OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg $env:OVAYRA_FFMPEG --ffprobe $env:OVAYRA_FFPROBE --output target/phase-0/fallback.webm --evidence "docs/phase-0/evidence/media-$env:OVAYRA_TARGET_ID-cpu.json"
+          cargo run --locked -p ovayra-spike -- media self-test --backend $env:OVAYRA_BACKEND --ffmpeg $env:OVAYRA_FFMPEG --ffprobe $env:OVAYRA_FFPROBE --input target/phase-0/fallback.webm --output target/phase-0/hardware.mp4 --evidence "docs/phase-0/evidence/media-$env:OVAYRA_TARGET_ID-hardware.json"
+          cargo run --locked -p ovayra-spike -- media forced-fallback --backend $env:OVAYRA_BACKEND --ffmpeg $env:OVAYRA_FFMPEG --ffprobe $env:OVAYRA_FFPROBE --input target/phase-0/fallback.webm --output target/phase-0/forced-fallback.webm --evidence "docs/phase-0/evidence/media-$env:OVAYRA_TARGET_ID-forced.json"
+      - name: Run the exact 120-second preview and typed threshold gate (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked -p ovayra-spike -- preview --ffmpeg "$OVAYRA_FFMPEG" --input target/phase-0/fallback.webm --duration-seconds 120 --automation --evidence "docs/phase-0/evidence/preview-$OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- evidence verify-preview --file "docs/phase-0/evidence/preview-$OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- platform tray --automation --evidence "docs/phase-0/evidence/tray-$OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- platform tray --automation --force-no-tray --evidence "docs/phase-0/evidence/tray-fallback-$OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- platform keyring --evidence "docs/phase-0/evidence/keyring-$OVAYRA_TARGET_ID.json"
+          cargo test --locked -p ovayra-spike --test process_group
+      - name: Run the exact 120-second preview and typed threshold gate (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo run --locked -p ovayra-spike -- preview --ffmpeg $env:OVAYRA_FFMPEG --input target/phase-0/fallback.webm --duration-seconds 120 --automation --evidence "docs/phase-0/evidence/preview-$env:OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- evidence verify-preview --file "docs/phase-0/evidence/preview-$env:OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- platform tray --automation --evidence "docs/phase-0/evidence/tray-$env:OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- platform tray --automation --force-no-tray --evidence "docs/phase-0/evidence/tray-fallback-$env:OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- platform keyring --evidence "docs/phase-0/evidence/keyring-$env:OVAYRA_TARGET_ID.json"
+          cargo test --locked -p ovayra-spike --test process_group
+      - name: Scan any package or notarization logs as bounded text (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: if [ -d target/phase-0/package-logs ]; then cargo run --locked -p ovayra-spike -- evidence lint --dir target/phase-0/package-logs --text; fi
+      - name: Scan any package or notarization logs as bounded text (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: if (Test-Path target/phase-0/package-logs) { cargo run --locked -p ovayra-spike -- evidence lint --dir target/phase-0/package-logs --text }
+      - name: Lint evidence before retention upload
+        run: cargo run --locked -p ovayra-spike -- evidence lint --dir docs/phase-0/evidence
+      - uses: actions/upload-artifact@v5
+        with:
+          name: phase-0-device-${{ matrix.target_id }}
+          path: |
+            docs/phase-0/evidence/*.json
+            target/phase-0/fallback.webm
+          if-no-files-found: error
+          retention-days: 14
+
+  gemini:
+    name: ${{ matrix.target_id }} protected Gemini smoke
+    needs: core
+    environment: gemini-smoke
+    runs-on: ${{ fromJSON(matrix.labels) }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target_id: macos-arm64-vt, labels: '["self-hosted","ovayra","macos-arm64-vt","aqua"]' }
+          - { target_id: windows-x64-mf, labels: '["self-hosted","ovayra","windows-x64-mf","desktop"]' }
+          - { target_id: linux-x64-vaapi-wayland, labels: '["self-hosted","ovayra","linux-x64-vaapi-wayland","wayland"]' }
+    env:
+      OVAYRA_TARGET_ID: ${{ matrix.target_id }}
+      OVAYRA_GEMINI_API_KEY: ${{ secrets.OVAYRA_GEMINI_API_KEY }}
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v6
+        with:
+          name: phase-0-device-${{ matrix.target_id }}
+          path: target/phase-0
+      - name: Normalize the prior core synthetic fallback (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          fallback="$(find target/phase-0 -type f -name fallback.webm -print -quit)"
+          test -n "$fallback"
+          if [ "$fallback" != target/phase-0/fallback.webm ]; then cp "$fallback" target/phase-0/fallback.webm; fi
+      - name: Normalize the prior core synthetic fallback (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'; $fallback = Get-ChildItem target/phase-0 -Filter fallback.webm -File -Recurse | Select-Object -First 1
+          if ($null -eq $fallback) { throw 'missing prior core synthetic fallback' }
+          if ($fallback.FullName -ne (Join-Path $env:GITHUB_WORKSPACE 'target/phase-0/fallback.webm')) { Copy-Item $fallback.FullName target/phase-0/fallback.webm }
+      - name: Run two-process protected Gemini resume gate (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$OVAYRA_GEMINI_API_KEY"; printf '::add-mask::%s\n' "$OVAYRA_GEMINI_API_KEY"
+          cargo run --locked -p ovayra-spike -- gemini stage-upload --input target/phase-0/fallback.webm --checkpoint target/phase-0/gemini-checkpoint.json --pause-after-chunks 1 --evidence "docs/phase-0/evidence/gemini-stage-$OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- gemini resume-analyze --input target/phase-0/fallback.webm --checkpoint target/phase-0/gemini-checkpoint.json --model gemini-2.5-flash --evidence "docs/phase-0/evidence/gemini-$OVAYRA_TARGET_ID.json"
+          rm -f target/phase-0/gemini-checkpoint.json
+      - name: Run two-process protected Gemini resume gate (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'; if ([string]::IsNullOrWhiteSpace($env:OVAYRA_GEMINI_API_KEY)) { throw 'missing protected Gemini credential' }; Write-Output "::add-mask::$env:OVAYRA_GEMINI_API_KEY"
+          cargo run --locked -p ovayra-spike -- gemini stage-upload --input target/phase-0/fallback.webm --checkpoint target/phase-0/gemini-checkpoint.json --pause-after-chunks 1 --evidence "docs/phase-0/evidence/gemini-stage-$env:OVAYRA_TARGET_ID.json"
+          cargo run --locked -p ovayra-spike -- gemini resume-analyze --input target/phase-0/fallback.webm --checkpoint target/phase-0/gemini-checkpoint.json --model gemini-2.5-flash --evidence "docs/phase-0/evidence/gemini-$env:OVAYRA_TARGET_ID.json"
+          Remove-Item target/phase-0/gemini-checkpoint.json -Force
+      - name: Lint protected evidence before upload
+        run: cargo run --locked -p ovayra-spike -- evidence lint --dir docs/phase-0/evidence
+      - uses: actions/upload-artifact@v5
+        with:
+          name: phase-0-gemini-${{ matrix.target_id }}
+          path: docs/phase-0/evidence/*.json
+          if-no-files-found: error
+          retention-days: 14

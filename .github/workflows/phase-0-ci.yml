@@ -1,0 +1,140 @@
+name: phase-0-ci
+
+on:
+  pull_request:
+    paths:
+      - "apps/**"
+      - "crates/**"
+      - "packaging/**"
+      - "scripts/**"
+      - "docs/phase-0/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/phase-0-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/**"
+      - "crates/**"
+      - "packaging/**"
+      - "scripts/**"
+      - "docs/phase-0/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/phase-0-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deterministic:
+    name: ${{ matrix.runner }} deterministic checks
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-14, target_id: macos-arm64-vt, artifact: ffmpeg-macos-arm64-vt-bundle }
+          - { runner: windows-2025, target_id: windows-x64-mf, artifact: ffmpeg-windows-x64-mf-bundle }
+          - { runner: ubuntu-24.04, target_id: linux-x64-vaapi-wayland, artifact: ffmpeg-linux-x64-vaapi-wayland-bundle }
+    env:
+      OVAYRA_TARGET_ID: ${{ matrix.target_id }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Slint, tray, and native linker prerequisites (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes build-essential pkg-config clang lld \
+            libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev \
+            libx11-xcb-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev \
+            libxcb-randr0-dev libxcb-icccm4-dev libdbus-1-dev libgl1-mesa-dev \
+            libegl1-mesa-dev libayatana-appindicator3-dev
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Lint every target and feature
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Test workspace
+        run: cargo test --workspace --all-targets
+      - name: Obtain a same-SHA Task 10 bundle (POSIX push only)
+        id: bundle_posix
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE_ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != push ]; then
+            echo 'CPU_FALLBACK=SKIPPED no trusted Task 10 producer is available for this event'
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          run_id="$(gh run list --workflow phase-0-ffmpeg.yml --commit "$GITHUB_SHA" --status success --json databaseId,headSha,event,conclusion --jq '.[] | select(.headSha == env.GITHUB_SHA and .event == "push" and .conclusion == "success") | .databaseId' | head -n 1)"
+          test -n "$run_id" || { echo 'same-SHA Task 10 producer is required for CPU fallback' >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > target-producer.json
+          jq -e --arg repository "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" '.name == "phase-0-ffmpeg" and .event == "push" and .conclusion == "success" and .head_repository.full_name == $repository and .head_sha == $sha' target-producer.json >/dev/null
+          rm -f target-producer.json
+          mkdir -p target/phase-0/bundle
+          gh run download "$run_id" --name "$BUNDLE_ARTIFACT" --dir target/phase-0/bundle
+          test -d target/phase-0/bundle && test -n "$(find target/phase-0/bundle -type f -name ffmpeg -print -quit)"
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+      - name: Obtain a same-SHA Task 10 bundle (Windows push only)
+        id: bundle_windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE_ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ('${{ github.event_name }}' -ne 'push') { Write-Output 'CPU_FALLBACK=SKIPPED no trusted Task 10 producer is available for this event'; "ready=false" | Add-Content $env:GITHUB_OUTPUT; exit 0 }
+          $runs = gh run list --workflow phase-0-ffmpeg.yml --commit $env:GITHUB_SHA --status success --json databaseId,headSha,event,conclusion | ConvertFrom-Json
+          $run = $runs | Where-Object { $_.headSha -eq $env:GITHUB_SHA -and $_.event -eq 'push' -and $_.conclusion -eq 'success' } | Select-Object -First 1
+          if ($null -eq $run) { throw 'same-SHA Task 10 producer is required for CPU fallback' }
+          $producer = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$($run.databaseId)" | ConvertFrom-Json
+          if ($producer.name -ne 'phase-0-ffmpeg' -or $producer.event -ne 'push' -or $producer.conclusion -ne 'success' -or $producer.head_repository.full_name -ne $env:GITHUB_REPOSITORY -or $producer.head_sha -ne $env:GITHUB_SHA) { throw 'Task 10 producer binding failed' }
+          New-Item -ItemType Directory -Force target/phase-0/bundle | Out-Null
+          gh run download $run.databaseId --name $env:BUNDLE_ARTIFACT --dir target/phase-0/bundle
+          if ($null -eq (Get-ChildItem target/phase-0/bundle -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1)) { throw 'downloaded Task 10 bundle is missing ffmpeg.exe' }
+          'ready=true' | Add-Content $env:GITHUB_OUTPUT
+      - name: Validate bundle and run CPU fallback (POSIX)
+        if: runner.os != 'Windows' && steps.bundle_posix.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg="$(find target/phase-0/bundle -type f -name ffmpeg -print -quit)"; ffprobe="$(find target/phase-0/bundle -type f -name ffprobe -print -quit)"
+          test -n "$ffmpeg" && test -n "$ffprobe"
+          bundle="$(dirname "$(dirname "$ffmpeg")")"
+          cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle "$bundle" --evidence "docs/phase-0/evidence/hosted-$OVAYRA_TARGET_ID-bundle.json"
+          cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg "$ffmpeg" --ffprobe "$ffprobe" --output target/phase-0/fallback.webm --evidence "docs/phase-0/evidence/hosted-$OVAYRA_TARGET_ID-cpu.json"
+      - name: Validate bundle and run CPU fallback (Windows)
+        if: runner.os == 'Windows' && steps.bundle_windows.outputs.ready == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ffmpeg = Get-ChildItem target/phase-0/bundle -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1
+          $ffprobe = Get-ChildItem target/phase-0/bundle -Filter ffprobe.exe -File -Recurse | Select-Object -First 1
+          if ($null -eq $ffmpeg -or $null -eq $ffprobe) { throw 'Task 10 bundle is incomplete' }
+          $bundle = Split-Path (Split-Path $ffmpeg.FullName -Parent) -Parent
+          cargo run --locked -p ovayra-spike -- release verify-ffmpeg --bundle $bundle --evidence "docs/phase-0/evidence/hosted-$env:OVAYRA_TARGET_ID-bundle.json"
+          cargo run --locked -p ovayra-spike -- media cpu-fallback --ffmpeg $ffmpeg.FullName --ffprobe $ffprobe.FullName --output target/phase-0/fallback.webm --evidence "docs/phase-0/evidence/hosted-$env:OVAYRA_TARGET_ID-cpu.json"
+      - name: Lint evidence before retention upload
+        if: always()
+        run: cargo run --locked -p ovayra-spike -- evidence lint --dir docs/phase-0/evidence
+      - name: Upload linted evidence and synthetic media only
+        if: (runner.os != 'Windows' && steps.bundle_posix.outputs.ready == 'true') || (runner.os == 'Windows' && steps.bundle_windows.outputs.ready == 'true')
+        uses: actions/upload-artifact@v5
+        with:
+          name: phase-0-hosted-${{ matrix.target_id }}
+          path: |
+            docs/phase-0/evidence/*.json
+            target/phase-0/fallback.webm
+          if-no-files-found: error
+          retention-days: 14

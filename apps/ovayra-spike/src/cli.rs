@@ -43,6 +43,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: MediaCommand,
     },
+    Evidence {
+        #[command(subcommand)]
+        command: EvidenceCommand,
+    },
     Gemini {
         #[command(subcommand)]
         command: GeminiCommand,
@@ -110,6 +114,23 @@ pub(crate) enum MediaCommand {
         output: PathBuf,
         #[arg(long)]
         evidence: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum EvidenceCommand {
+    /// Fail closed when evidence or text logs contain credentials or unsafe paths.
+    Lint {
+        #[arg(long)]
+        dir: PathBuf,
+        /// Treat every regular file as UTF-8 text (for package and notary logs).
+        #[arg(long)]
+        text: bool,
+    },
+    /// Check the documented 120-second desktop-preview thresholds from typed evidence.
+    VerifyPreview {
+        #[arg(long)]
+        file: PathBuf,
     },
 }
 

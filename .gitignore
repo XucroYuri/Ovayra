@@ -6,3 +6,5 @@
 .worktrees/
 /target/
 *.log
+/docs/phase-0/evidence/*.webm
+/docs/phase-0/evidence/*.checkpoint

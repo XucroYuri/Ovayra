@@ -1,5 +1,6 @@
 mod child_tree;
 mod cli;
+mod evidence_lint;
 mod gemini_orchestration;
 mod preview_app;
 
@@ -28,7 +29,9 @@ use spike_platform::{
 use spike_release::{FfmpegBundle, PackageRelease};
 use zeroize::Zeroizing;
 
-use crate::cli::{Cli, Command, GeminiCommand, MediaCommand, PlatformCommand, ReleaseCommand};
+use crate::cli::{
+    Cli, Command, EvidenceCommand, GeminiCommand, MediaCommand, PlatformCommand, ReleaseCommand,
+};
 use crate::gemini_orchestration::{ResumeRequest, resume_analyze_with_evidence, write_atomic};
 
 const UPLOAD_CHECKPOINT_ACCOUNT: &str = "phase-0-upload-checkpoint-v1";
@@ -116,6 +119,12 @@ fn main() -> Result<()> {
                     evidence,
                 },
         } => forced_fallback(backend, &ffmpeg, &ffprobe, &input, &output, &evidence)?,
+        Command::Evidence {
+            command: EvidenceCommand::Lint { dir, text },
+        } => evidence_lint::lint_dir(&dir, text)?,
+        Command::Evidence {
+            command: EvidenceCommand::VerifyPreview { file },
+        } => evidence_lint::verify_preview(&file)?,
         Command::Gemini {
             command:
                 GeminiCommand::StageUpload {
