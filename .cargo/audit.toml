@@ -1,0 +1,5 @@
+[advisories]
+# quick-xml 0.39.4 is reached only through wayland-scanner's build-time proc
+# macro parsing trusted bundled Wayland XML; no untrusted runtime XML reaches it.
+# Remove these exceptions once wayland-scanner supports quick-xml >=0.41.
+ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]

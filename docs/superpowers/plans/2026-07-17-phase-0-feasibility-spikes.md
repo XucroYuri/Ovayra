@@ -57,6 +57,7 @@ Ovayra/
 ├── Cargo.lock
 ├── rust-toolchain.toml
 ├── deny.toml
+├── .cargo/audit.toml
 ├── apps/ovayra-spike/
 │   ├── Cargo.toml
 │   ├── build.rs
@@ -116,6 +117,7 @@ Ovayra/
 - Create: `Cargo.toml`
 - Create: `rust-toolchain.toml`
 - Create: `deny.toml`
+- Create: `.cargo/audit.toml`
 - Create: `apps/ovayra-spike/Cargo.toml`
 - Create: `apps/ovayra-spike/src/main.rs`
 - Create: `crates/spike-contracts/Cargo.toml`
@@ -171,7 +173,7 @@ semver = { version = "=1.0.28", features = ["serde"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 sha2 = "=0.11.0"
-slint = { version = "=1.17.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "renderer-software", "system-tray"] }
+slint = { version = "=1.17.1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "system-tray"] }
 slint-build = "=1.17.1"
 sysinfo = "=0.38.4"
 tempfile = "=3.27.0"
@@ -221,10 +223,16 @@ Create `deny.toml`:
 ```toml
 [advisories]
 yanked = "deny"
+unmaintained = "workspace"
+ignore = [
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39.4 is reached only through wayland-scanner's build-time proc-macro parsing trusted bundled Wayland XML; no untrusted runtime XML reaches it. Remove this exception once wayland-scanner supports quick-xml >=0.41." },
+  { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39.4 is reached only through wayland-scanner's build-time proc-macro parsing trusted bundled Wayland XML; no untrusted runtime XML reaches it. Remove this exception once wayland-scanner supports quick-xml >=0.41." },
+]
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+allow-wildcard-paths = true
 highlight = "all"
 
 [sources]
@@ -234,6 +242,16 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 ```
 
 License selection remains a separate explicit release-policy check because Slint's multi-license expression requires choosing the applicable community or royalty-free desktop terms rather than treating dependency metadata as a legal decision.
+
+Create `.cargo/audit.toml` with the two narrowly scoped quick-xml advisory
+exceptions. `quick-xml 0.39.4` is reached only through wayland-scanner's
+build-time proc macro parsing trusted bundled Wayland XML; no untrusted runtime
+XML reaches it. Remove both exceptions once wayland-scanner supports
+`quick-xml >=0.41`. In `deny.toml`, retain the same two advisory exceptions
+with explicit reasons, set `unmaintained = "workspace"` so transitive notices
+remain visible without failing, and allow wildcard path dependencies solely for
+private intra-workspace paths. Mark every workspace package `publish = false`
+so Cargo Deny does not permit those path dependencies in a public crate.
 
 - [ ] **Step 3: Add minimal compilable crate roots and CLI**
 

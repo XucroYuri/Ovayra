@@ -1,9 +1,15 @@
 [advisories]
 yanked = "deny"
+unmaintained = "workspace"
+ignore = [
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39.4 is reached only through wayland-scanner's build-time proc-macro parsing trusted bundled Wayland XML; no untrusted runtime XML reaches it. Remove this exception once wayland-scanner supports quick-xml >=0.41." },
+  { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39.4 is reached only through wayland-scanner's build-time proc-macro parsing trusted bundled Wayland XML; no untrusted runtime XML reaches it. Remove this exception once wayland-scanner supports quick-xml >=0.41." },
+]
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+allow-wildcard-paths = true
 highlight = "all"
 
 [sources]
