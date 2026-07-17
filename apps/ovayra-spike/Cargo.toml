@@ -20,13 +20,11 @@ spike-gemini = { path = "../../crates/spike-gemini" }
 spike-media = { path = "../../crates/spike-media" }
 spike-platform = { path = "../../crates/spike-platform" }
 spike-release = { path = "../../crates/spike-release" }
+spike-ui-generated = { path = "../../crates/spike-ui-generated" }
 tokio.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
-[build-dependencies]
-slint-build.workspace = true
 
 [lints]
 workspace = true

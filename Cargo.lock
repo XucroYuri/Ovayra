@@ -4043,12 +4043,12 @@ dependencies = [
  "png 0.18.1",
  "resvg",
  "slint",
- "slint-build",
  "spike-contracts",
  "spike-gemini",
  "spike-media",
  "spike-platform",
  "spike-release",
+ "spike-ui-generated",
  "sysinfo",
  "tempfile",
  "tokio",
@@ -5549,6 +5549,14 @@ dependencies = [
  "thiserror 2.0.18",
  "toml",
  "url",
+]
+
+[[package]]
+name = "spike-ui-generated"
+version = "0.0.1"
+dependencies = [
+ "slint",
+ "slint-build",
 ]
 
 [[package]]

@@ -19,7 +19,7 @@ pub(crate) enum Command {
         ffmpeg: PathBuf,
         #[arg(long)]
         input: PathBuf,
-        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..))]
+        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(20..))]
         duration_seconds: u64,
         #[arg(long)]
         automation: bool,
@@ -214,6 +214,25 @@ mod tests {
                 "fallback.webm",
                 "--evidence",
                 "evidence.json",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn preview_rejects_durations_that_cannot_collect_the_twenty_second_rss_sample() {
+        assert!(
+            Cli::try_parse_from([
+                "ovayra-spike",
+                "preview",
+                "--ffmpeg",
+                "ffmpeg",
+                "--input",
+                "input.webm",
+                "--duration-seconds",
+                "19",
+                "--evidence",
+                "preview.json",
             ])
             .is_err()
         );

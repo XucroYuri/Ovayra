@@ -280,9 +280,18 @@ fn run_hardware_attempt_inner(
 }
 
 fn evidence_target() -> Result<TargetId> {
-    let target = env::var("OVAYRA_EVIDENCE_TARGET")
-        .context("OVAYRA_EVIDENCE_TARGET must name a supported Phase 0 target")?;
-    TargetId::new(target).context("OVAYRA_EVIDENCE_TARGET is not a supported target")
+    evidence_target_from_values(
+        env::var("OVAYRA_TARGET_ID").ok().as_deref(),
+        env::var("OVAYRA_EVIDENCE_TARGET").ok().as_deref(),
+    )
+}
+
+/// Uses the Task 12 environment name; the legacy variable remains only for existing local runs.
+fn evidence_target_from_values(primary: Option<&str>, legacy: Option<&str>) -> Result<TargetId> {
+    let target = primary
+        .or(legacy)
+        .context("OVAYRA_TARGET_ID must name a supported Phase 0 target")?;
+    TargetId::new(target).context("OVAYRA_TARGET_ID is not a supported target")
 }
 
 fn record_backend_evidence(
@@ -366,7 +375,7 @@ fn write_evidence_atomic(destination: &Path, json: &str) -> std::io::Result<()> 
 mod tests {
     use std::fs;
 
-    use super::write_evidence_atomic;
+    use super::{evidence_target_from_values, write_evidence_atomic};
 
     #[test]
     fn atomically_replaces_evidence_without_leaving_temporary_files() {
@@ -376,5 +385,12 @@ mod tests {
         write_evidence_atomic(&destination, "new").unwrap();
         assert_eq!(fs::read_to_string(&destination).unwrap(), "new");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn evidence_target_prefers_the_task_twelve_environment_name() {
+        let target =
+            evidence_target_from_values(Some("macos-arm64-vt"), Some("linux-x64-nvidia")).unwrap();
+        assert_eq!(target.as_str(), "macos-arm64-vt");
     }
 }

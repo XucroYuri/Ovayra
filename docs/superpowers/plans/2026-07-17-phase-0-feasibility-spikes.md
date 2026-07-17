@@ -60,7 +60,6 @@ Ovayra/
 ├── .cargo/audit.toml
 ├── apps/ovayra-spike/
 │   ├── Cargo.toml
-│   ├── build.rs
 │   ├── assets/tray.svg
 │   ├── ui/spike.slint
 │   ├── src/
@@ -77,6 +76,10 @@ Ovayra/
 │   ├── Cargo.toml
 │   ├── src/{lib.rs,capability.rs,cpu_fallback.rs,ffmpeg.rs,progress.rs,preview.rs}
 │   └── tests/{cpu_fallback.rs,hardware_plans.rs,progress_contract.rs}
+├── crates/spike-ui-generated/
+│   ├── Cargo.toml
+│   ├── build.rs
+│   └── src/lib.rs
 ├── crates/spike-gemini/
 │   ├── Cargo.toml
 │   ├── src/{lib.rs,client.rs,dto.rs,session.rs}
@@ -120,6 +123,9 @@ Ovayra/
 - Create: `.cargo/audit.toml`
 - Create: `apps/ovayra-spike/Cargo.toml`
 - Create: `apps/ovayra-spike/src/main.rs`
+- Create: `crates/spike-ui-generated/Cargo.toml`
+- Create: `crates/spike-ui-generated/build.rs`
+- Create: `crates/spike-ui-generated/src/lib.rs`
 - Create: `crates/spike-contracts/Cargo.toml`
 - Create: `crates/spike-contracts/src/lib.rs`
 - Create: `crates/spike-media/Cargo.toml`
@@ -139,6 +145,7 @@ Create `Cargo.toml` with this dependency policy:
 [workspace]
 members = [
   "apps/ovayra-spike",
+  "crates/spike-ui-generated",
   "crates/spike-contracts",
   "crates/spike-media",
   "crates/spike-gemini",
@@ -205,7 +212,7 @@ profile = "minimal"
 components = ["clippy", "rustfmt"]
 ```
 
-Each crate manifest must use `version.workspace = true`, `edition.workspace = true`, `rust-version.workspace = true`, `license.workspace = true`, and `[lints] workspace = true`. The UI crate alone gets a `build-dependencies.slint-build` entry.
+Each handwritten crate manifest must use `version.workspace = true`, `edition.workspace = true`, `rust-version.workspace = true`, `license.workspace = true`, and `[lints] workspace = true`. `spike-ui-generated` alone owns `build-dependencies.slint-build`; it uses `#![deny(unsafe_code)]` and confines Slint's generated `allow(unsafe_code)` attribute to its generated include module, while all handwritten packages inherit the workspace `forbid(unsafe_code)` policy.
 
 Use this dependency allocation so adapters do not leak into the evidence schema:
 
@@ -216,7 +223,8 @@ Use this dependency allocation so adapters do not leak into the evidence schema:
 | `spike-gemini` | `reqwest`, `serde`, `serde_json`, `thiserror`, `tokio`, `tracing`, `url`, dev `wiremock` |
 | `spike-platform` | `aes-gcm`, `base64`, `command-group`, `keyring`, `serde`, `serde_json`, `sysinfo`, `thiserror`, `tokio`, `zeroize` |
 | `spike-release` | `hex`, `minisign-verify`, `semver`, `serde`, `serde_json`, `sha2`, `thiserror`, `toml`, `url` |
-| `ovayra-spike` | `anyhow`, `clap`, `icns`, `ico`, `png`, `resvg`, `slint`, `spike-*`, `tokio`, `tracing`, `tracing-subscriber`; build `slint-build` |
+| `spike-ui-generated` | `slint`; build `slint-build`, re-export only generated UI components |
+| `ovayra-spike` | `anyhow`, `clap`, `icns`, `ico`, `png`, `resvg`, `slint`, `spike-*`, `tokio`, `tracing`, `tracing-subscriber` |
 
 Create `deny.toml`:
 
@@ -791,10 +799,11 @@ git commit -m "feat: validate hardware media fallback policy"
 ### Task 6: Prove Slint Preview, Main-Thread Updates, and Backpressure
 
 **Files:**
-- Create: `apps/ovayra-spike/build.rs`
 - Create: `apps/ovayra-spike/ui/spike.slint`
 - Create: `apps/ovayra-spike/assets/tray.svg`
 - Create: `apps/ovayra-spike/src/preview_app.rs`
+- Create: `crates/spike-ui-generated/build.rs`
+- Create: `crates/spike-ui-generated/src/lib.rs`
 - Create: `crates/spike-media/src/preview.rs`
 - Create: `crates/spike-media/tests/preview_frames.rs`
 - Modify: `apps/ovayra-spike/src/main.rs`
@@ -836,11 +845,12 @@ It reads exactly `640 * 360 * 4` bytes per frame. A short frame at EOF ends clea
 
 - [ ] **Step 3: Build the Slint components**
 
-Create `apps/ovayra-spike/build.rs`:
+Create `crates/spike-ui-generated/build.rs`:
 
 ```rust
 fn main() {
-    slint_build::compile("ui/spike.slint").expect("compile Phase 0 Slint UI");
+    slint_build::compile("../../apps/ovayra-spike/ui/spike.slint")
+        .expect("compile Phase 0 Slint UI");
 }
 ```
 
@@ -884,6 +894,8 @@ export component SpikeTray inherits SystemTrayIcon {
 ```
 
 The spike SVG is a simple opaque 64x64 rounded square with a contrasting `O`; it is explicitly a technical-test asset, not the final brand mark.
+
+`spike-ui-generated` re-exports `PreviewWindow` and `SpikeTray`. It is the only package allowed to contain Slint's generated include module; its handwritten `lib.rs` denies unsafe code and narrows the generator's lint attribute to that module.
 
 - [ ] **Step 4: Implement the main-thread frame bridge**
 

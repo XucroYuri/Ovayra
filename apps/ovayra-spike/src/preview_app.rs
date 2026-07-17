@@ -15,14 +15,7 @@ use spike_contracts::{Evidence, SpikeId, TargetId, Verdict};
 use spike_media::{FfmpegPreview, Frame, LatestFrame};
 use sysinfo::{ProcessesToUpdate, System, get_current_pid};
 
-// Slint 1.17's generated item-tree macro emits `allow(unsafe_code)` even though this
-// generated file has no handwritten unsafe blocks. Keep that exception out of the app.
-#[allow(unsafe_code)]
-mod slint_generated {
-    slint::include_modules!();
-}
-
-use slint_generated::{PreviewWindow, SpikeTray};
+use spike_ui_generated::{PreviewWindow, SpikeTray};
 
 const LATENCY_SAMPLE_LIMIT: usize = 4096;
 const EXPECTED_MILLI_FPS: u64 = 24_000;
@@ -71,6 +64,7 @@ struct PreviewGateInput {
     rss_growth_mib: u64,
     event_loop_errors: u64,
     preview_stream_errors: u64,
+    rss_samples_complete: bool,
 }
 
 impl PreviewGateInput {
@@ -87,6 +81,7 @@ impl PreviewGateInput {
             rss_growth_mib: 64,
             event_loop_errors: 0,
             preview_stream_errors: 0,
+            rss_samples_complete: true,
         }
     }
 }
@@ -94,6 +89,7 @@ impl PreviewGateInput {
 struct PreviewGateResult {
     passed: bool,
     observed_milli_fps: u64,
+    rss_samples_complete: bool,
 }
 
 struct PreviewEvidenceInput<'a> {
@@ -129,8 +125,10 @@ fn evaluate_preview_gate(input: PreviewGateInput) -> PreviewGateResult {
             && input.p95_ms <= 100
             && input.rss_growth_mib <= 64
             && input.event_loop_errors == 0
-            && input.preview_stream_errors == 0,
+            && input.preview_stream_errors == 0
+            && input.rss_samples_complete,
         observed_milli_fps,
+        rss_samples_complete: input.rss_samples_complete,
     }
 }
 
@@ -373,6 +371,10 @@ fn finish_preview_evidence(input: PreviewEvidenceInput<'_>) -> Result<()> {
         rss_growth_mib,
         event_loop_errors: metrics.event_loop_errors,
         preview_stream_errors,
+        rss_samples_complete: has_required_rss_samples(
+            &metrics.rss_samples,
+            requested_duration_seconds,
+        ),
     });
     let mut evidence = Evidence::new(SpikeId::Preview, target);
     evidence.measure("frames_read", metrics.frames_read)?;
@@ -382,6 +384,7 @@ fn finish_preview_evidence(input: PreviewEvidenceInput<'_>) -> Result<()> {
     evidence.measure("p95_ms", p95)?;
     evidence.measure("p99_ms", metrics.percentile_millis(99))?;
     evidence.measure("rss_samples_bytes", &metrics.rss_samples)?;
+    evidence.measure("rss_samples_complete", gate.rss_samples_complete)?;
     evidence.measure("rss_growth_mib", rss_growth_mib)?;
     evidence.measure("renderer_backend", backend.evidence_name())?;
     evidence.measure("requested_duration_seconds", requested_duration_seconds)?;
@@ -458,6 +461,9 @@ fn sample_rss(metrics: &mut Metrics, seconds: u64) {
 }
 
 fn rss_growth_mib(samples: &[(u64, u64)]) -> u64 {
+    if !has_required_rss_samples(samples, samples.last().map_or(0, |(seconds, _)| *seconds)) {
+        return u64::MAX;
+    }
     let Some((_, first)) = samples.first() else {
         return u64::MAX;
     };
@@ -467,10 +473,17 @@ fn rss_growth_mib(samples: &[(u64, u64)]) -> u64 {
     last.saturating_sub(*first) / (1024 * 1024)
 }
 
+fn has_required_rss_samples(samples: &[(u64, u64)], end_seconds: u64) -> bool {
+    samples.len() >= 2
+        && samples.iter().any(|(seconds, _)| *seconds == 20)
+        && samples.iter().any(|(seconds, _)| *seconds == end_seconds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplySchedule, BackendChoice, PreviewGateInput, evaluate_preview_gate, parse_backend,
+        ApplySchedule, BackendChoice, PreviewGateInput, evaluate_preview_gate,
+        has_required_rss_samples, parse_backend,
     };
     use std::time::Duration;
 
@@ -521,5 +534,12 @@ mod tests {
         );
         assert!(parse_backend(Some("auto")).is_err());
         assert!(parse_backend(Some("software")).is_err());
+    }
+
+    #[test]
+    fn rss_gate_requires_a_twenty_second_and_end_sample() {
+        assert!(!has_required_rss_samples(&[(120, 10)], 120));
+        assert!(!has_required_rss_samples(&[(20, 10)], 120));
+        assert!(has_required_rss_samples(&[(20, 10), (120, 11)], 120));
     }
 }

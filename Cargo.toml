@@ -6,6 +6,7 @@ members = [
   "crates/spike-gemini",
   "crates/spike-platform",
   "crates/spike-release",
+  "crates/spike-ui-generated",
 ]
 resolver = "3"
 
@@ -49,9 +50,7 @@ wiremock = "=0.6.5"
 zeroize = "=1.9.0"
 
 [workspace.lints.rust]
-# `deny` keeps handwritten code unsafe-free while allowing the Slint-generated module to
-# isolate its code-generator-required `allow(unsafe_code)` attribute.
-unsafe_code = "deny"
+unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "deny"
