@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::Read,
-    path::{Path, PathBuf},
+    path::{Component as PathComponent, Path, PathBuf},
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -13,6 +13,7 @@ use std::{
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use url::Url;
 
 const FFMPEG_VERSION: &str = "8.1.2";
 const PROJECT_LOCK: &str = include_str!("../../../packaging/ffmpeg.lock");
@@ -106,10 +107,10 @@ impl FfmpegBundle {
         }
         validate_no_symlink_or_unlisted_files(&root, &artifacts)?;
         validate_checksums(&root, &artifacts)?;
-        validate_locked_source(&root, trusted_lock)?;
+        let lock = validate_locked_source(&root, trusted_lock)?;
         let buildconf = fs::read_to_string(root.join("provenance/buildconf.txt"))?;
         Self::validate_buildconf(&buildconf)?;
-        validate_sbom(&root)
+        validate_sbom(&root, &lock)
     }
 
     /// Runs only verified in-root executables with a bounded wall-clock deadline.
@@ -195,51 +196,246 @@ fn validate_executables(root: &Path) -> Result<(), FfmpegPolicyError> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LockFile {
     ffmpeg: LockedFfmpeg,
+    libvpx: LockedDependency,
+    opus: LockedDependency,
+    nv_codec_headers: LockedDependency,
+    target: Vec<LockedTarget>,
 }
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LockedFfmpeg {
     version: String,
+    source_url: String,
+    signature_url: String,
     sha256: String,
     release_key_fingerprint: String,
+    release_tag: String,
+    release_commit: String,
+    source_date_epoch: u64,
 }
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LockedDependency {
+    tag: String,
+    peeled_commit: String,
+    source_url: String,
+    license: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LockedTarget {
+    id: String,
+    triple: String,
+    builder_image: String,
+    builder_os: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SignatureAttestation {
+    schema_version: u8,
     verified: bool,
-    fingerprint: String,
+    signer_fingerprint: String,
+    primary_fingerprint: String,
     sha256: String,
 }
 
-fn validate_locked_source(root: &Path, trusted_lock: &str) -> Result<(), FfmpegPolicyError> {
+fn invalid_lock(message: impl Into<String>) -> FfmpegPolicyError {
+    FfmpegPolicyError::InvalidBuildconf(format!("invalid source lock: {}", message.into()))
+}
+
+fn is_lower_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (byte as char).is_ascii_lowercase())
+}
+
+#[allow(clippy::too_many_lines)] // A single fail-closed schema boundary makes all immutable fields auditable together.
+fn parse_lock(value: &str) -> Result<LockFile, FfmpegPolicyError> {
+    let lock: LockFile = toml::from_str(value).map_err(|error| invalid_lock(error.to_string()))?;
+    let ffmpeg = &lock.ffmpeg;
+    if ffmpeg.version != FFMPEG_VERSION
+        || ffmpeg.release_tag != "n8.1.2"
+        || !is_lower_hex(&ffmpeg.sha256, 64)
+        || !is_lower_hex(&ffmpeg.release_commit, 40)
+        || ffmpeg.release_key_fingerprint.len() != 40
+        || !ffmpeg
+            .release_key_fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (byte as char).is_ascii_uppercase())
+        || ffmpeg.source_date_epoch == 0
+    {
+        return Err(invalid_lock("FFmpeg value has invalid syntax"));
+    }
+    for (url, host, suffix) in [
+        (&ffmpeg.source_url, "ffmpeg.org", "ffmpeg-8.1.2.tar.xz"),
+        (
+            &ffmpeg.signature_url,
+            "ffmpeg.org",
+            "ffmpeg-8.1.2.tar.xz.asc",
+        ),
+    ] {
+        let parsed = Url::parse(url).map_err(|_| invalid_lock("invalid upstream URL"))?;
+        if parsed.scheme() != "https"
+            || parsed.host_str() != Some(host)
+            || !parsed.path().ends_with(suffix)
+        {
+            return Err(invalid_lock("unexpected FFmpeg upstream URL"));
+        }
+    }
+    for (dependency, tag, commit, host, path, license) in [
+        (
+            &lock.libvpx,
+            "v1.16.0",
+            "1024874c5919305883187e2953de8fcb4c3d7fa6",
+            "github.com",
+            "/webmproject/libvpx.git",
+            "BSD-3-Clause",
+        ),
+        (
+            &lock.opus,
+            "v1.6.1",
+            "22244de5a79bd1d6d623c32e72bf1954b56235be",
+            "github.com",
+            "/xiph/opus.git",
+            "BSD-3-Clause",
+        ),
+        (
+            &lock.nv_codec_headers,
+            "n13.0.19.0",
+            "e844e5b26f46bb77479f063029595293aa8f812d",
+            "github.com",
+            "/FFmpeg/nv-codec-headers.git",
+            "MIT",
+        ),
+    ] {
+        let parsed = Url::parse(&dependency.source_url)
+            .map_err(|_| invalid_lock("invalid dependency URL"))?;
+        if dependency.tag != tag
+            || dependency.peeled_commit != commit
+            || dependency.license != license
+            || !is_lower_hex(&dependency.peeled_commit, 40)
+            || parsed.scheme() != "https"
+            || parsed.host_str() != Some(host)
+            || parsed.path() != path
+        {
+            return Err(invalid_lock(
+                "dependency does not match immutable provenance",
+            ));
+        }
+    }
+    let expected = [
+        (
+            "macos-arm64-vt",
+            "aarch64-apple-darwin",
+            "macos-14",
+            "macos",
+        ),
+        (
+            "windows-x64-mf",
+            "x86_64-pc-windows-msvc",
+            "windows-2025",
+            "windows",
+        ),
+        (
+            "linux-x64-vaapi-wayland",
+            "x86_64-unknown-linux-gnu",
+            "ubuntu-24.04",
+            "linux",
+        ),
+    ];
+    if lock.target.len() != expected.len()
+        || expected.iter().any(|(id, triple, image, os)| {
+            !lock.target.iter().any(|target| {
+                (
+                    target.id.as_str(),
+                    target.triple.as_str(),
+                    target.builder_image.as_str(),
+                    target.builder_os.as_str(),
+                ) == (*id, *triple, *image, *os)
+            })
+        })
+    {
+        return Err(invalid_lock(
+            "target matrix must be exactly the supported immutable targets",
+        ));
+    }
+    Ok(lock)
+}
+
+fn validate_locked_source(root: &Path, trusted_lock: &str) -> Result<LockFile, FfmpegPolicyError> {
     let bundled = fs::read_to_string(root.join("provenance/ffmpeg.lock"))?;
     if bundled != trusted_lock {
         return Err(FfmpegPolicyError::InvalidBuildconf(
             "bundle lock differs from authenticated project lock".into(),
         ));
     }
-    let lock: LockFile = toml::from_str(&bundled).map_err(|error| {
-        FfmpegPolicyError::InvalidBuildconf(format!("invalid source lock: {error}"))
-    })?;
+    let lock = parse_lock(&bundled)?;
+    let target = fs::read_to_string(root.join(".ovayra-target"))?;
+    if !lock.target.iter().any(|entry| entry.id == target.trim()) {
+        return Err(invalid_lock(
+            "bundle target marker is not in immutable target matrix",
+        ));
+    }
     let actual = sha256_file(&root.join("provenance/ffmpeg-8.1.2.tar.xz"))?;
     if lock.ffmpeg.version != FFMPEG_VERSION || lock.ffmpeg.sha256 != actual {
         return Err(FfmpegPolicyError::ChecksumMismatch(
             "provenance/ffmpeg-8.1.2.tar.xz".into(),
         ));
     }
+    if fs::metadata(root.join("provenance/ffmpeg-8.1.2.tar.xz.asc"))?.len() == 0 {
+        return Err(FfmpegPolicyError::InvalidBuildconf(
+            "empty FFmpeg detached signature".into(),
+        ));
+    }
+    validate_tarball(root.join("provenance/ffmpeg-8.1.2.tar.xz"))?;
     let attestation: SignatureAttestation = serde_json::from_slice(&fs::read(
         root.join("provenance/ffmpeg-signature-attestation.json"),
     )?)
     .map_err(|error| {
         FfmpegPolicyError::InvalidBuildconf(format!("invalid signature attestation: {error}"))
     })?;
-    if !attestation.verified
-        || attestation.fingerprint != lock.ffmpeg.release_key_fingerprint
+    if attestation.schema_version != 1
+        || !attestation.verified
+        || attestation.signer_fingerprint != lock.ffmpeg.release_key_fingerprint
+        || attestation.primary_fingerprint != lock.ffmpeg.release_key_fingerprint
         || attestation.sha256 != actual
     {
         return Err(FfmpegPolicyError::InvalidBuildconf(
             "signature attestation does not match lock".into(),
         ));
+    }
+    Ok(lock)
+}
+
+fn validate_tarball(path: PathBuf) -> Result<(), FfmpegPolicyError> {
+    let file = fs::File::open(path)?;
+    let mut archive = tar::Archive::new(xz2::read::XzDecoder::new(file));
+    let mut entries = 0_u64;
+    for entry in archive
+        .entries()
+        .map_err(|error| invalid_lock(format!("invalid tar.xz: {error}")))?
+    {
+        let entry =
+            entry.map_err(|error| invalid_lock(format!("invalid tar.xz entry: {error}")))?;
+        let path = entry
+            .path()
+            .map_err(|error| invalid_lock(format!("invalid tar.xz path: {error}")))?;
+        let mut components = path.components();
+        if components.next() != Some(PathComponent::Normal("ffmpeg-8.1.2".as_ref()))
+            || components.any(|component| !matches!(component, PathComponent::Normal(_)))
+        {
+            return Err(invalid_lock(
+                "FFmpeg source archive contains an unsafe or unexpected top-level path",
+            ));
+        }
+        entries += 1;
+    }
+    if entries == 0 {
+        return Err(invalid_lock("FFmpeg source archive is empty"));
     }
     Ok(())
 }
@@ -464,7 +660,7 @@ struct License {
     id: Option<String>,
 }
 
-fn validate_sbom(root: &Path) -> Result<(), FfmpegPolicyError> {
+fn validate_sbom(root: &Path, lock: &LockFile) -> Result<(), FfmpegPolicyError> {
     let bom: Bom = serde_json::from_slice(&fs::read(root.join("sbom/ffmpeg.cdx.json"))?)
         .map_err(|error| FfmpegPolicyError::InvalidSbom(error.to_string()))?;
     for (name, version, license, archive) in [
@@ -476,14 +672,14 @@ fn validate_sbom(root: &Path) -> Result<(), FfmpegPolicyError> {
         ),
         (
             "libvpx",
-            "1.16.0",
-            "BSD-3-Clause",
+            lock.libvpx.tag.trim_start_matches('v'),
+            lock.libvpx.license.as_str(),
             "provenance/libvpx-source.tar.zst",
         ),
         (
             "opus",
-            "1.6.1",
-            "BSD-3-Clause",
+            lock.opus.tag.trim_start_matches('v'),
+            lock.opus.license.as_str(),
             "provenance/opus-source.tar.zst",
         ),
     ] {

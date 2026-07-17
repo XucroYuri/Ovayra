@@ -7,16 +7,19 @@ sha256 = "8c56e9c1a92e833d00caf16975ae6b67c571a1f6949321262ef3d425d816d2a8"
 release_key_fingerprint = "FCF986EA15E6E293A5644F10B4322F04D67658D8"
 release_tag = "n8.1.2"
 release_commit = "38b88335f99e76ed89ff3c93f877fdefce736c13"
+source_date_epoch = 1781663615
 
 [libvpx]
 tag = "v1.16.0"
 peeled_commit = "1024874c5919305883187e2953de8fcb4c3d7fa6"
 source_url = "https://github.com/webmproject/libvpx.git"
+license = "BSD-3-Clause"
 
 [opus]
 tag = "v1.6.1"
 peeled_commit = "22244de5a79bd1d6d623c32e72bf1954b56235be"
 source_url = "https://github.com/xiph/opus.git"
+license = "BSD-3-Clause"
 
 [nv_codec_headers]
 tag = "n13.0.19.0"
@@ -27,14 +30,17 @@ license = "MIT"
 [[target]]
 id = "macos-arm64-vt"
 triple = "aarch64-apple-darwin"
-builder = "GitHub Actions macos-14 (Apple Silicon)"
+builder_image = "macos-14"
+builder_os = "macos"
 
 [[target]]
 id = "windows-x64-mf"
 triple = "x86_64-pc-windows-msvc"
-builder = "GitHub Actions windows-2025"
+builder_image = "windows-2025"
+builder_os = "windows"
 
 [[target]]
 id = "linux-x64-vaapi-wayland"
 triple = "x86_64-unknown-linux-gnu"
-builder = "GitHub Actions ubuntu-24.04"
+builder_image = "ubuntu-24.04"
+builder_os = "linux"

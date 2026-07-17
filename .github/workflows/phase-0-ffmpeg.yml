@@ -58,9 +58,8 @@ jobs:
           mkdir -p target/ffmpeg-source
           curl --fail --location --proto '=https' --tlsv1.2 -o target/ffmpeg-source/ffmpeg-8.1.2.tar.xz "$FFMPEG_URL"
           curl --fail --location --proto '=https' --tlsv1.2 -o target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc "$FFMPEG_ASC_URL"
-          curl --fail --location --proto '=https' --tlsv1.2 "$FFMPEG_KEY_URL" | gpg --batch --import
-          gpg --batch --fingerprint FCF986EA15E6E293A5644F10B4322F04D67658D8
-          gpg --batch --verify target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc target/ffmpeg-source/ffmpeg-8.1.2.tar.xz
+          curl --fail --location --proto '=https' --tlsv1.2 -o target/ffmpeg-source/ffmpeg-devel.asc "$FFMPEG_KEY_URL"
+          bash scripts/verify-ffmpeg-signature.sh --key target/ffmpeg-source/ffmpeg-devel.asc --tar target/ffmpeg-source/ffmpeg-8.1.2.tar.xz --signature target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc --fingerprint FCF986EA15E6E293A5644F10B4322F04D67658D8 --attestation target/ffmpeg-source/ffmpeg-signature-attestation.json
           test "$(shasum -a 256 target/ffmpeg-source/ffmpeg-8.1.2.tar.xz | awk '{print $1}')" = 8c56e9c1a92e833d00caf16975ae6b67c571a1f6949321262ef3d425d816d2a8
           git clone --depth 1 --branch v1.16.0 "$LIBVPX_REPOSITORY" target/ffmpeg-source/libvpx
           test "$(git -C target/ffmpeg-source/libvpx rev-parse HEAD)" = 1024874c5919305883187e2953de8fcb4c3d7fa6
@@ -78,7 +77,6 @@ jobs:
           git clone --depth 1 --branch n13.0.19.0 "$NV_CODEC_HEADERS_REPOSITORY" target/ffmpeg-source/nv-codec-headers
           test "$(git -C target/ffmpeg-source/nv-codec-headers rev-parse HEAD)" = e844e5b26f46bb77479f063029595293aa8f812d
           git -C target/ffmpeg-source/nv-codec-headers archive --format=tar HEAD | zstd -T0 -o target/ffmpeg-source/nv-codec-headers-source.tar.zst
-          printf '{"verified":true,"fingerprint":"FCF986EA15E6E293A5644F10B4322F04D67658D8","sha256":"8c56e9c1a92e833d00caf16975ae6b67c571a1f6949321262ef3d425d816d2a8"}\n' > target/ffmpeg-source/ffmpeg-signature-attestation.json
       - name: Verify FFmpeg detached release signature and exact sources (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -87,9 +85,7 @@ jobs:
           Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile target/ffmpeg-source/ffmpeg-8.1.2.tar.xz
           Invoke-WebRequest -Uri $env:FFMPEG_ASC_URL -OutFile target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc
           Invoke-WebRequest -Uri $env:FFMPEG_KEY_URL -OutFile target/ffmpeg-source/ffmpeg-devel.asc
-          gpg --batch --import target/ffmpeg-source/ffmpeg-devel.asc
-          gpg --batch --fingerprint FCF986EA15E6E293A5644F10B4322F04D67658D8
-          gpg --batch --verify target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc target/ffmpeg-source/ffmpeg-8.1.2.tar.xz
+          bash scripts/verify-ffmpeg-signature.sh --key target/ffmpeg-source/ffmpeg-devel.asc --tar target/ffmpeg-source/ffmpeg-8.1.2.tar.xz --signature target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc --fingerprint FCF986EA15E6E293A5644F10B4322F04D67658D8 --attestation target/ffmpeg-source/ffmpeg-signature-attestation.json
           if ((Get-FileHash target/ffmpeg-source/ffmpeg-8.1.2.tar.xz -Algorithm SHA256).Hash.ToLower() -ne '8c56e9c1a92e833d00caf16975ae6b67c571a1f6949321262ef3d425d816d2a8') { throw 'FFmpeg hash mismatch' }
           git clone --depth 1 --branch v1.16.0 $env:LIBVPX_REPOSITORY target/ffmpeg-source/libvpx
           if ((git -C target/ffmpeg-source/libvpx rev-parse HEAD) -ne '1024874c5919305883187e2953de8fcb4c3d7fa6') { throw 'libvpx tag mismatch' }
@@ -107,7 +103,6 @@ jobs:
           git clone --depth 1 --branch n13.0.19.0 $env:NV_CODEC_HEADERS_REPOSITORY target/ffmpeg-source/nv-codec-headers
           if ((git -C target/ffmpeg-source/nv-codec-headers rev-parse HEAD) -ne 'e844e5b26f46bb77479f063029595293aa8f812d') { throw 'NV codec headers tag mismatch' }
           git -C target/ffmpeg-source/nv-codec-headers archive --format=tar HEAD | zstd -T0 -o target/ffmpeg-source/nv-codec-headers-source.tar.zst
-          '{"verified":true,"fingerprint":"FCF986EA15E6E293A5644F10B4322F04D67658D8","sha256":"8c56e9c1a92e833d00caf16975ae6b67c571a1f6949321262ef3d425d816d2a8"}' | Set-Content target/ffmpeg-source/ffmpeg-signature-attestation.json -NoNewline
       - name: Build clean bundle A and B, validate policy, capabilities, and CPU smoke (POSIX)
         if: runner.os != 'Windows'
         shell: bash
