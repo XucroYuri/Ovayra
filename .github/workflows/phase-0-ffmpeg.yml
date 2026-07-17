@@ -2,9 +2,24 @@ name: phase-0-ffmpeg
 
 on:
   pull_request:
-    paths: ["packaging/**", "scripts/build-ffmpeg-*", "crates/spike-release/**", "apps/ovayra-spike/**", ".github/workflows/phase-0-ffmpeg.yml"]
+    paths:
+      - "scripts/**"
+      - "packaging/**"
+      - "crates/spike-release/**"
+      - "apps/ovayra-spike/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/phase-0-ffmpeg.yml"
   push:
     branches: [main]
+    paths:
+      - "scripts/**"
+      - "packaging/**"
+      - "crates/spike-release/**"
+      - "apps/ovayra-spike/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/phase-0-ffmpeg.yml"
   workflow_dispatch:
 
 permissions:
@@ -145,5 +160,8 @@ jobs:
           name: ffmpeg-${{ matrix.target.id }}-reports
           path: |
             docs/phase-0/evidence/ffmpeg-bundle-*.json
-            target/ffmpeg-*/stage/provenance/**
-            target/ffmpeg-*/cpu-evidence.json
+            target/ffmpeg-a-stage/**
+            target/ffmpeg-b-stage/**
+            target/ffmpeg-a-cpu-evidence.json
+            target/ffmpeg-b-cpu-evidence.json
+          if-no-files-found: error

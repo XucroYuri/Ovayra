@@ -23,6 +23,19 @@ parse_status() {
   [[ $count -eq 1 ]] || die "expected exactly one VALIDSIG record, found $count"
 }
 
+sha256() {
+  local value
+  if command -v sha256sum >/dev/null; then
+    value=$(sha256sum "$1" | awk '{print $1}')
+  elif command -v shasum >/dev/null; then
+    value=$(shasum -a 256 "$1" | awk '{print $1}')
+  else
+    die "sha256sum or shasum is required"
+  fi
+  [[ "$value" =~ ^[a-f0-9]{64}$ ]] || die "SHA-256 tool returned an invalid digest"
+  printf '%s\n' "$value"
+}
+
 if [[ ${1:-} == "--parse-status" ]]; then
   [[ $# -eq 4 && ${3:-} == "--fingerprint" ]] || die "usage: --parse-status STATUS --fingerprint FINGERPRINT"
   parse_status "$2" "$4"
@@ -53,5 +66,5 @@ chmod 700 "$home"
 GNUPGHOME="$home" gpg --batch --no-options --import "$key" >/dev/null 2>&1 || die "cannot import pinned key artifact"
 GNUPGHOME="$home" gpg --batch --no-options --status-fd=1 --verify "$signature" "$tarball" >"$status" 2>/dev/null || die "detached signature verification failed"
 parse_status "$status" "$fingerprint"
-hash=$(sha256sum "$tarball" | awk '{print $1}')
+hash=$(sha256 "$tarball")
 printf '{"schema_version":1,"verified":true,"signer_fingerprint":"%s","primary_fingerprint":"%s","sha256":"%s"}\n' "$fingerprint" "$fingerprint" "$hash" > "$attestation"

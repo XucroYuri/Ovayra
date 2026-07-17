@@ -18,3 +18,26 @@ for case_name in wrong multiple missing; do
     echo "expected $case_name VALIDSIG fixture to fail" >&2; exit 1
   fi
 done
+
+make_command_path() {
+  local bin=$1 hash_tool=$2 tool
+  mkdir -p "$bin"
+  for tool in mktemp chmod rm awk; do ln -s "$(command -v "$tool")" "$bin/$tool"; done
+  cat > "$bin/gpg" <<EOF
+#!/bin/sh
+case "\$*" in *--verify*) printf '%s\\n' '$valid' ;; esac
+EOF
+  cat > "$bin/$hash_tool" <<'EOF'
+#!/bin/sh
+printf '%064d  %s\n' 0 "$1"
+EOF
+  chmod +x "$bin/gpg" "$bin/$hash_tool"
+}
+
+for hash_tool in sha256sum shasum; do
+  bin="$tmp/$hash_tool-bin"; make_command_path "$bin" "$hash_tool"
+  key="$tmp/$hash_tool-key"; tarball="$tmp/$hash_tool-tar"; signature="$tmp/$hash_tool-asc"; attestation="$tmp/$hash_tool-attestation"
+  printf 'key' > "$key"; printf 'tar' > "$tarball"; printf 'asc' > "$signature"
+  PATH="$bin" "$(command -v bash)" "$script" --key "$key" --tar "$tarball" --signature "$signature" --fingerprint "$fingerprint" --attestation "$attestation"
+  grep -Fq '"sha256":"0000000000000000000000000000000000000000000000000000000000000000"' "$attestation"
+done
