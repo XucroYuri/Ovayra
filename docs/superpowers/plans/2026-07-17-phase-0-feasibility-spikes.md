@@ -329,20 +329,20 @@ use spike_contracts::{Evidence, EvidenceError, SpikeId, TargetId, Verdict};
 
 #[test]
 fn rejects_sensitive_measurement_names() {
-    let mut evidence = Evidence::new(SpikeId::Gemini, TargetId::new("macos-arm64-vt"));
+    let mut evidence = Evidence::new(SpikeId::Gemini, TargetId::new("macos-arm64-vt").unwrap());
     let error = evidence.measure("upload_url", "https://secret.invalid").unwrap_err();
     assert!(matches!(error, EvidenceError::SensitiveField(_)));
 }
 
 #[test]
 fn serializes_only_finished_evidence() {
-    let evidence = Evidence::new(SpikeId::Preview, TargetId::new("macos-arm64-vt"));
+    let evidence = Evidence::new(SpikeId::Preview, TargetId::new("macos-arm64-vt").unwrap());
     assert!(matches!(evidence.to_pretty_json(), Err(EvidenceError::Unfinished)));
 }
 
 #[test]
 fn finished_report_has_stable_schema() {
-    let mut evidence = Evidence::new(SpikeId::Media, TargetId::new("linux-x64-vaapi-wayland"));
+    let mut evidence = Evidence::new(SpikeId::Media, TargetId::new("linux-x64-vaapi-wayland").unwrap());
     evidence.measure("p95_latency_ms", 18).unwrap();
     evidence.finish(Verdict::Pass, 1_250);
     let json = evidence.to_pretty_json().unwrap();
@@ -383,23 +383,23 @@ pub enum SpikeId { Preview, Media, Gemini, Platform, Distribution }
 #[serde(rename_all = "snake_case")]
 pub enum Verdict { Pass, Conditional, Fail, Skipped }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetId(String);
 
 impl TargetId {
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self { Self(value.into()) }
+    pub fn new(value: impl Into<String>) -> Result<Self, TargetIdError> {
+        // Accept exactly the six Required Real-Device Matrix target IDs.
+    }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
 pub struct Evidence {
-    pub schema_version: u32,
-    pub spike: SpikeId,
-    pub target: TargetId,
-    pub verdict: Option<Verdict>,
-    pub duration_ms: Option<u64>,
-    pub measurements: BTreeMap<String, Value>,
-    pub observations: Vec<String>,
+    schema_version: u32,
+    spike: SpikeId,
+    target: TargetId,
+    verdict: Option<Verdict>,
+    duration_ms: Option<u64>,
+    measurements: BTreeMap<String, Value>,
+    observations: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -408,6 +408,8 @@ pub enum EvidenceError {
     SensitiveField(String),
     #[error("evidence has not been finished")]
     Unfinished,
+    #[error("unsupported evidence schema version: {0}")]
+    UnsupportedSchemaVersion(u32),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
 }
@@ -422,11 +424,13 @@ impl Evidence {
     }
 
     pub fn measure(&mut self, name: &str, value: impl Serialize) -> Result<(), EvidenceError> {
-        let normalized = name.to_ascii_lowercase();
-        if FORBIDDEN.iter().any(|part| normalized.contains(part)) {
-            return Err(EvidenceError::SensitiveField(name.to_owned()));
-        }
-        self.measurements.insert(name.to_owned(), serde_json::to_value(value)?);
+        // Reject forbidden names and recursively reject forbidden object keys in
+        // serialized Value objects, including objects nested in arrays.
+        Ok(())
+    }
+
+    pub fn observe(&mut self, observation: impl Into<String>) -> Result<(), EvidenceError> {
+        // Reject observations containing a forbidden marker.
         Ok(())
     }
 
@@ -436,15 +440,20 @@ impl Evidence {
     }
 
     pub fn to_pretty_json(&self) -> Result<String, EvidenceError> {
-        if self.verdict.is_none() || self.duration_ms.is_none() {
-            return Err(EvidenceError::Unfinished);
-        }
-        Ok(serde_json::to_string_pretty(self)?)
+        // Validate version, completion, measurements, and observations before
+        // serializing a private serde document.
+    }
+
+    pub fn from_json(input: &str) -> Result<Self, EvidenceError> {
+        // Deserialize only a deny_unknown_fields private document, then apply
+        // the same validation before constructing Evidence.
     }
 }
 ```
 
-Re-export the types from `lib.rs`. Add `RequiredEvidence { id, target, session, backend }` and a TOML `PhaseZeroMatrix` loader in `matrix.rs`.
+Do not derive `Serialize` or `Deserialize` for `Evidence`: its only public write/read paths are validated `to_pretty_json` and `from_json`. Expose only read-only accessors. `TargetId` implements validated serde serialization/deserialization and has a public `TargetIdError`.
+
+Re-export the types from `lib.rs`. Add `RequiredEvidence { id, target, session, backend }` and a TOML `PhaseZeroMatrix` loader in `matrix.rs`. `validate_required_verdict` takes a concrete `RequiredEvidence`, rejects an entry absent from the matrix, and accepts only `Pass` for a present entry.
 
 - [ ] **Step 4: Encode the complete required matrix**
 

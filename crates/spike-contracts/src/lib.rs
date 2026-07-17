@@ -5,5 +5,5 @@
 mod evidence;
 mod matrix;
 
-pub use evidence::{Evidence, EvidenceError, SpikeId, TargetId, Verdict};
+pub use evidence::{Evidence, EvidenceError, SpikeId, TargetId, TargetIdError, Verdict};
 pub use matrix::{MatrixError, PhaseZeroMatrix, RequiredEvidence};

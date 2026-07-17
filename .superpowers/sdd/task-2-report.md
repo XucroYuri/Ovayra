@@ -37,3 +37,11 @@ git diff --check
 ```
 
 Cargo emitted pre-existing workspace warnings about the exact `toml = "=1.1.3+spec-1.1.0"` metadata requirement; this task did not alter dependency pins.
+
+## Review hardening follow-up
+
+Added focused RED tests for private/validated evidence serialization, nested measurement key redaction, guarded observations, validated target construction/deserialization, schema-version and unknown-field rejection, exact matrix coverage, malformed matrix records, and entry-bound verdict validation.
+
+The RED command `cargo test -p spike-contracts --test evidence_contract` failed as intended because the hardened APIs and signatures were absent (`TargetId::new(...).unwrap()`, `observe`, `from_json`, `SensitiveObservation`, and entry-bound `validate_required_verdict`).
+
+GREEN implements a private `Evidence` state plus private `deny_unknown_fields` serde document, recursive `Value` inspection (including arrays), guarded observations, exact six-target `TargetId` validation, and a matrix verdict API that rejects missing entries and every non-`Pass` result. The evidence type deliberately does not implement serde traits; a compile-fail doctest demonstrates that direct serde serialization is unavailable.

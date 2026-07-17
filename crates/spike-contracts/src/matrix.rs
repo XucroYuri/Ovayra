@@ -5,15 +5,6 @@ use thiserror::Error;
 
 use crate::{SpikeId, TargetId, Verdict};
 
-const SUPPORTED_TARGETS: &[&str] = &[
-    "macos-arm64-vt",
-    "windows-x64-mf",
-    "windows-x64-nvidia",
-    "linux-x64-vaapi-wayland",
-    "linux-x64-vaapi-x11",
-    "linux-x64-nvidia",
-];
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequiredEvidence {
@@ -37,14 +28,14 @@ pub enum MatrixError {
     Io(#[from] std::io::Error),
     #[error("phase 0 evidence matrix must contain at least one required entry")]
     Empty,
-    #[error("unsupported phase 0 target: {0}")]
-    UnsupportedTarget(String),
     #[error("required evidence qualifiers must not be empty")]
     EmptyQualifier,
     #[error("duplicate required evidence entry")]
     Duplicate,
     #[error("required real-device evidence must pass, got {0:?}")]
     RequiredVerdict(Verdict),
+    #[error("evidence entry is not required by this matrix")]
+    MissingRequiredEvidence,
 }
 
 impl PhaseZeroMatrix {
@@ -70,13 +61,21 @@ impl PhaseZeroMatrix {
         Self::from_toml(&fs::read_to_string(path)?)
     }
 
-    /// Rejects every required real-device outcome except [`Verdict::Pass`].
+    /// Rejects a missing entry and every required outcome except [`Verdict::Pass`].
     ///
     /// # Errors
     ///
-    /// Returns [`MatrixError::RequiredVerdict`] for `Conditional`, `Fail`, or
+    /// Returns [`MatrixError::MissingRequiredEvidence`] when `entry` is absent,
+    /// or [`MatrixError::RequiredVerdict`] for `Conditional`, `Fail`, or
     /// `Skipped` outcomes.
-    pub fn validate_required_verdict(&self, verdict: Verdict) -> Result<(), MatrixError> {
+    pub fn validate_required_verdict(
+        &self,
+        entry: &RequiredEvidence,
+        verdict: Verdict,
+    ) -> Result<(), MatrixError> {
+        if !self.required.contains(entry) {
+            return Err(MatrixError::MissingRequiredEvidence);
+        }
         if verdict == Verdict::Pass {
             Ok(())
         } else {
@@ -91,10 +90,6 @@ impl PhaseZeroMatrix {
 
         let mut entries = BTreeSet::new();
         for evidence in &self.required {
-            let target = evidence.target.as_str();
-            if !SUPPORTED_TARGETS.contains(&target) {
-                return Err(MatrixError::UnsupportedTarget(target.to_owned()));
-            }
             if evidence.session.as_deref().is_some_and(str::is_empty)
                 || evidence.backend.as_deref().is_some_and(str::is_empty)
             {
@@ -102,7 +97,7 @@ impl PhaseZeroMatrix {
             }
             if !entries.insert((
                 evidence.id,
-                target,
+                evidence.target.as_str(),
                 evidence.session.as_deref(),
                 evidence.backend.as_deref(),
             )) {
