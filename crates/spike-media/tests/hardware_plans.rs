@@ -1,4 +1,53 @@
-use spike_media::{Backend, HardwarePlan, Inventory};
+use spike_media::{Backend, HardwarePlan, Inventory, InventoryCommand, InventoryOutput};
+
+fn complete_inventory() -> Inventory {
+    Inventory::from_command_outputs(&[
+        InventoryOutput::success(InventoryCommand::Version, "version"),
+        InventoryOutput::success(InventoryCommand::Buildconf, "buildconf"),
+        InventoryOutput::success(
+            InventoryCommand::Hwaccels,
+            "vaapi cuda videotoolbox d3d11va",
+        ),
+        InventoryOutput::success(InventoryCommand::Decoders, "h264 h264_cuvid"),
+        InventoryOutput::success(
+            InventoryCommand::Encoders,
+            "h264_vaapi h264_nvenc h264_videotoolbox h264_mf",
+        ),
+        InventoryOutput::success(InventoryCommand::Filters, "scale scale_vaapi scale_cuda"),
+    ])
+    .unwrap()
+}
+
+#[test]
+fn inventory_commands_are_the_exact_required_six_once_each() {
+    assert_eq!(
+        InventoryCommand::ALL.map(InventoryCommand::args),
+        [
+            ["-version"],
+            ["-buildconf"],
+            ["-hwaccels"],
+            ["-decoders"],
+            ["-encoders"],
+            ["-filters"]
+        ]
+    );
+}
+
+#[test]
+fn inventory_rejects_missing_or_failed_command_outputs() {
+    let complete = [
+        InventoryOutput::success(InventoryCommand::Version, "version"),
+        InventoryOutput::success(InventoryCommand::Buildconf, "buildconf"),
+        InventoryOutput::success(InventoryCommand::Hwaccels, "vaapi"),
+        InventoryOutput::success(InventoryCommand::Decoders, "h264"),
+        InventoryOutput::success(InventoryCommand::Encoders, "h264_vaapi"),
+        InventoryOutput::success(InventoryCommand::Filters, "scale_vaapi"),
+    ];
+    assert!(Inventory::from_command_outputs(&complete[..5]).is_err());
+    let mut failed = complete;
+    failed[3] = InventoryOutput::failed(InventoryCommand::Decoders, "unavailable");
+    assert!(Inventory::from_command_outputs(&failed).is_err());
+}
 
 #[test]
 fn videotoolbox_plan_uses_platform_decoder_and_encoder() {
@@ -54,12 +103,7 @@ fn no_plan_claims_gpu_without_a_runtime_self_test() {
 #[test]
 fn availability_requires_inventory_success_and_an_observed_video_frame() {
     let plan = HardwarePlan::self_test(Backend::Vaapi);
-    let inventory = Inventory::from_outputs(&[
-        ("-hwaccels", "vaapi"),
-        ("-decoders", "h264"),
-        ("-encoders", "h264_vaapi"),
-        ("-filters", "scale_vaapi"),
-    ]);
+    let inventory = complete_inventory();
     assert!(!plan.is_available(&inventory, true, 0));
     assert!(!plan.is_available(&inventory, false, 1));
     assert!(plan.is_available(&inventory, true, 1));
@@ -67,23 +111,27 @@ fn availability_requires_inventory_success_and_an_observed_video_frame() {
 
 #[test]
 fn availability_rejects_missing_required_inventory_components() {
-    let plan = HardwarePlan::self_test(Backend::NvencNvdec);
-    let inventory = Inventory::from_outputs(&[
-        ("-hwaccels", "cuda"),
-        ("-decoders", "h264_cuvid"),
-        ("-encoders", "h264_nvenc"),
+    let inventory = Inventory::from_command_outputs(&[
+        InventoryOutput::success(InventoryCommand::Version, "version"),
+        InventoryOutput::success(InventoryCommand::Buildconf, "buildconf"),
+        InventoryOutput::success(InventoryCommand::Hwaccels, "cuda"),
+        InventoryOutput::success(InventoryCommand::Decoders, "h264_cuvid"),
+        InventoryOutput::success(InventoryCommand::Encoders, "h264_nvenc"),
     ]);
-    assert!(!plan.is_available(&inventory, true, 1));
+    assert!(inventory.is_err());
 }
 
 #[test]
 fn availability_does_not_treat_a_partial_inventory_name_as_a_component() {
     let plan = HardwarePlan::self_test(Backend::Vaapi);
-    let inventory = Inventory::from_outputs(&[
-        ("-hwaccels", "vaapi-compatible"),
-        ("-decoders", "h264"),
-        ("-encoders", "h264_vaapi"),
-        ("-filters", "scale_vaapi"),
-    ]);
+    let inventory = Inventory::from_command_outputs(&[
+        InventoryOutput::success(InventoryCommand::Version, "version"),
+        InventoryOutput::success(InventoryCommand::Buildconf, "buildconf"),
+        InventoryOutput::success(InventoryCommand::Hwaccels, "vaapi-compatible"),
+        InventoryOutput::success(InventoryCommand::Decoders, "h264"),
+        InventoryOutput::success(InventoryCommand::Encoders, "h264_vaapi"),
+        InventoryOutput::success(InventoryCommand::Filters, "scale_vaapi"),
+    ])
+    .unwrap();
     assert!(!plan.is_available(&inventory, true, 1));
 }

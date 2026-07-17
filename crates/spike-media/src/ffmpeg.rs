@@ -7,6 +7,8 @@ use tokio::{
     process::Command,
 };
 
+use crate::capability::{Inventory, InventoryCommand, InventoryError, InventoryOutput};
+
 /// Arguments attached to every `FFmpeg` invocation, including probes and self-tests.
 pub const COMMON_ARGS: &[&str] = &[
     "-hide_banner",
@@ -32,6 +34,17 @@ pub enum FfmpegError {
     Output(#[source] std::io::Error),
     #[error("FFmpeg child did not provide its configured output pipe")]
     MissingOutputPipe,
+}
+
+/// Errors while gathering the complete `FFmpeg` capability inventory.
+#[derive(Debug, Error)]
+pub enum InventoryCollectionError {
+    #[error("failed to execute required inventory command")]
+    Runner(#[source] FfmpegError),
+    #[error("required inventory command did not exit successfully: {command:?}")]
+    FailedCommand { command: InventoryCommand },
+    #[error("invalid complete inventory")]
+    Inventory(#[source] InventoryError),
 }
 
 /// Runs only the `FFmpeg` CLI; this crate never links `FFmpeg` libraries.
@@ -65,13 +78,25 @@ impl FfmpegRunner {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .spawn()
             .map_err(FfmpegError::Spawn)?;
-        let stdout = child.stdout.take().ok_or(FfmpegError::MissingOutputPipe)?;
-        let stderr = child.stderr.take().ok_or(FfmpegError::MissingOutputPipe)?;
+        let Some(stdout) = child.stdout.take() else {
+            terminate_and_reap(&mut child).await;
+            return Err(FfmpegError::MissingOutputPipe);
+        };
+        let Some(stderr) = child.stderr.take() else {
+            terminate_and_reap(&mut child).await;
+            return Err(FfmpegError::MissingOutputPipe);
+        };
         let (stdout, stderr, status) =
-            tokio::try_join!(read_all(stdout), read_stderr_capped(stderr), child.wait(),)
-                .map_err(FfmpegError::Output)?;
+            match tokio::try_join!(read_all(stdout), read_stderr_capped(stderr), child.wait(),) {
+                Ok(output) => output,
+                Err(error) => {
+                    terminate_and_reap(&mut child).await;
+                    return Err(FfmpegError::Output(error));
+                }
+            };
         let redacted = redact_stderr(&stderr);
         let digest = Sha256::digest(redacted);
         let mut stderr_sha256 = String::with_capacity(64);
@@ -84,6 +109,35 @@ impl FfmpegRunner {
         };
         Ok((stdout, evidence))
     }
+
+    /// Executes each required inventory command exactly once and accepts only six successful results.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for child-process failures, non-zero inventory exits, or incomplete inventory.
+    pub async fn collect_inventory(&self) -> Result<Inventory, InventoryCollectionError> {
+        let mut outputs = Vec::with_capacity(InventoryCommand::ALL.len());
+        for command in InventoryCommand::ALL {
+            let args = command.args();
+            let (stdout, evidence) = self
+                .run(&args)
+                .await
+                .map_err(InventoryCollectionError::Runner)?;
+            if evidence.exit_code != Some(0) {
+                return Err(InventoryCollectionError::FailedCommand { command });
+            }
+            outputs.push(InventoryOutput::success(
+                command,
+                String::from_utf8_lossy(&stdout),
+            ));
+        }
+        Inventory::from_command_outputs(&outputs).map_err(InventoryCollectionError::Inventory)
+    }
+}
+
+async fn terminate_and_reap(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
+    let _ = child.wait().await;
 }
 
 async fn read_all(mut reader: impl AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
@@ -119,4 +173,67 @@ fn redact_stderr(stderr: &[u8]) -> Vec<u8> {
         .collect::<Vec<_>>()
         .join("\n")
         .into_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    use sha2::{Digest, Sha256};
+    use tokio::io::{AsyncWriteExt, duplex};
+
+    use super::{COMMON_ARGS, STDERR_LIMIT, read_all, read_stderr_capped, redact_stderr};
+
+    #[test]
+    fn common_arguments_are_exact_and_precede_operation_arguments() {
+        let operation = ["-version"];
+        let actual: Vec<_> = COMMON_ARGS
+            .iter()
+            .chain(operation.iter())
+            .copied()
+            .collect();
+        assert_eq!(
+            actual,
+            [
+                "-hide_banner",
+                "-nostdin",
+                "-nostats",
+                "-progress",
+                "pipe:1",
+                "-version"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn stdout_and_capped_stderr_are_read_as_separate_streams_without_deadlock() {
+        let (mut stderr_writer, stderr_reader) = duplex(1024);
+        let stderr = vec![b'e'; STDERR_LIMIT + 8 * 1024];
+        let writer = tokio::spawn(async move {
+            stderr_writer.write_all(&stderr).await.unwrap();
+            stderr_writer.shutdown().await.unwrap();
+        });
+        let retained = read_stderr_capped(stderr_reader).await.unwrap();
+        writer.await.unwrap();
+        assert_eq!(retained.len(), STDERR_LIMIT);
+
+        let (mut stdout_writer, stdout_reader) = duplex(64);
+        stdout_writer
+            .write_all(b"progress=continue\n")
+            .await
+            .unwrap();
+        stdout_writer.shutdown().await.unwrap();
+        assert_eq!(
+            read_all(stdout_reader).await.unwrap(),
+            b"progress=continue\n"
+        );
+    }
+
+    #[test]
+    fn stderr_is_redacted_before_its_evidence_hash_is_computed() {
+        let redacted = redact_stderr(b"ordinary diagnostic\n/path/that/must/not/escape\n");
+        assert_eq!(redacted, b"ordinary diagnostic\n[redacted-path]");
+        assert_ne!(
+            Sha256::digest(&redacted),
+            Sha256::digest(b"ordinary diagnostic\n/path/that/must/not/escape\n")
+        );
+    }
 }

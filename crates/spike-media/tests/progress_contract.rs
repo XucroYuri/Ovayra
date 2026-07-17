@@ -59,6 +59,46 @@ fn rejects_a_current_block_that_grows_past_the_cap_across_chunks() {
 }
 
 #[test]
+fn accepts_a_large_chunk_when_it_contains_many_complete_blocks() {
+    let input = b"frame=1\nprogress=continue\n".repeat(4_000);
+    assert!(input.len() > 64 * 1024);
+    let events = ProgressParser::default().push(&input).unwrap();
+    assert_eq!(events.len(), 4_000);
+}
+
+#[test]
+fn recovers_after_each_malformed_block_error() {
+    let failures: [&[u8]; 4] = [
+        b"frame=not-a-number\nprogress=end\n",
+        b"progress=maybe\n",
+        &vec![b'x'; 65_537],
+        &[
+            vec![b'x'; 32_000],
+            vec![b'\n'],
+            vec![b'x'; 32_000],
+            vec![b'\n'],
+            vec![b'x'; 32_000],
+            vec![b'\n'],
+        ]
+        .concat(),
+    ];
+    for failure in failures {
+        let mut parser = ProgressParser::default();
+        assert!(parser.push(failure).is_err());
+        let events = parser.push(b"frame=2\nprogress=end\n").unwrap();
+        assert_eq!(
+            events,
+            vec![ProgressEvent {
+                frame: Some(2),
+                out_time_us: None,
+                speed: None,
+                finished: true
+            }]
+        );
+    }
+}
+
+#[test]
 fn does_not_emit_incomplete_blocks() {
     let events = ProgressParser::default()
         .push(b"frame=12\nout_time_us=10\n")

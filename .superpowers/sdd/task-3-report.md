@@ -50,3 +50,43 @@ metadata in other crate manifests; dependency pins were intentionally not modifi
   child from blocking on a full stderr pipe.
 - Confirmed negative availability tests cover missing components, nonzero exits, zero observed
   frames, and partial inventory names.
+
+## Review corrections (second TDD cycle)
+
+### RED evidence
+
+1. `accepts_a_large_chunk_when_it_contains_many_complete_blocks` initially failed with
+   `PendingInputTooLarge`, proving the old parser incorrectly capped an entire input chunk.
+2. `recovers_after_each_malformed_block_error` initially failed after a malformed numeric value,
+   proving parser state was retained after an error.
+3. New inventory-contract tests initially failed to compile because the six-command inventory API
+   (`InventoryCommand`, `InventoryOutput`, and `Inventory::from_command_outputs`) did not exist.
+
+### GREEN corrections
+
+- Added the exact inventory command enum: `-version`, `-buildconf`, `-hwaccels`, `-decoders`,
+  `-encoders`, and `-filters`. `FfmpegRunner::collect_inventory` executes each exactly once;
+  inventory construction rejects absent, duplicate, or nonzero results and bounds each retained
+  output to 64 KiB.
+- Reworked `ProgressParser::push` to process complete lines as it receives them, rather than
+  rejecting a large total chunk. It now resets pending/current state after every malformed number,
+  invalid marker, pending-line limit, and block-limit error.
+- The runner now uses `kill_on_drop(true)` and explicitly kill/waits on post-spawn missing-pipe
+  and reader-failure paths while returning the originating error. It drains stderr beyond the
+  retained 1 MiB cap.
+- Added runner unit coverage for common-argument order, stdout/stderr separation, >1 MiB stderr
+  draining, and redaction before hashing.
+
+### Correction verification
+
+```text
+cargo fmt
+cargo clippy -p spike-media --all-targets --all-features -- -D warnings
+  PASS
+
+cargo test -p spike-media --all-targets --all-features
+  PASS: 21 tests passed
+
+git diff --check
+  PASS
+```

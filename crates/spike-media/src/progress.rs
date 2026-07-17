@@ -41,29 +41,52 @@ impl ProgressParser {
     ///
     /// Returns an error for over-limit input, invalid markers, or malformed known numbers.
     pub fn push(&mut self, input: &[u8]) -> Result<Vec<ProgressEvent>, ProgressError> {
-        if self.pending.len().saturating_add(input.len()) > MAX_PENDING_BYTES {
+        let mut events = Vec::new();
+        let mut start = 0;
+        for (index, byte) in input.iter().enumerate() {
+            if *byte != b'\n' {
+                continue;
+            }
+            if let Err(error) = self.finish_line(&input[start..index], &mut events) {
+                self.reset();
+                return Err(error);
+            }
+            start = index + 1;
+        }
+        if start < input.len() {
+            if self.pending.len().saturating_add(input.len() - start) > MAX_PENDING_BYTES {
+                self.reset();
+                return Err(ProgressError::PendingInputTooLarge {
+                    limit: MAX_PENDING_BYTES,
+                });
+            }
+            self.pending.extend_from_slice(&input[start..]);
+        }
+        Ok(events)
+    }
+
+    fn finish_line(
+        &mut self,
+        suffix: &[u8],
+        events: &mut Vec<ProgressEvent>,
+    ) -> Result<(), ProgressError> {
+        if self.pending.len().saturating_add(suffix.len()) > MAX_PENDING_BYTES {
             return Err(ProgressError::PendingInputTooLarge {
                 limit: MAX_PENDING_BYTES,
             });
         }
-
-        self.pending.extend_from_slice(input);
-        let mut events = Vec::new();
-        let mut consumed = 0;
-        while let Some(newline) = self.pending[consumed..]
-            .iter()
-            .position(|byte| *byte == b'\n')
-        {
-            let end = consumed + newline;
-            let mut line = self.pending[consumed..end].to_vec();
-            if line.last() == Some(&b'\r') {
-                line.pop();
-            }
-            self.consume_line(&line, &mut events)?;
-            consumed = end + 1;
+        self.pending.extend_from_slice(suffix);
+        let mut line = std::mem::take(&mut self.pending);
+        if line.last() == Some(&b'\r') {
+            line.pop();
         }
-        self.pending.drain(..consumed);
-        Ok(events)
+        self.consume_line(&line, events)
+    }
+
+    fn reset(&mut self) {
+        self.pending.clear();
+        self.current.clear();
+        self.current_bytes = 0;
     }
 
     fn consume_line(

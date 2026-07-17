@@ -19,26 +19,137 @@ impl Backend {
 /// The bounded, non-sensitive text returned by `FFmpeg` inventory commands.
 #[derive(Debug, Clone, Default)]
 pub struct Inventory {
+    version: String,
+    buildconf: String,
     hwaccels: String,
     decoders: String,
     encoders: String,
     filters: String,
 }
 
-impl Inventory {
+const MAX_INVENTORY_OUTPUT_BYTES: usize = 64 * 1024;
+
+/// The required `FFmpeg` inventory commands, each executed independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InventoryCommand {
+    Version,
+    Buildconf,
+    Hwaccels,
+    Decoders,
+    Encoders,
+    Filters,
+}
+
+impl InventoryCommand {
+    pub const ALL: [Self; 6] = [
+        Self::Version,
+        Self::Buildconf,
+        Self::Hwaccels,
+        Self::Decoders,
+        Self::Encoders,
+        Self::Filters,
+    ];
+
     #[must_use]
-    pub fn from_outputs(outputs: &[(&str, &str)]) -> Self {
+    pub const fn args(self) -> [&'static str; 1] {
+        match self {
+            Self::Version => ["-version"],
+            Self::Buildconf => ["-buildconf"],
+            Self::Hwaccels => ["-hwaccels"],
+            Self::Decoders => ["-decoders"],
+            Self::Encoders => ["-encoders"],
+            Self::Filters => ["-filters"],
+        }
+    }
+}
+
+/// One bounded inventory command result. Raw paths and command lines are not retained.
+#[derive(Debug, Clone)]
+pub struct InventoryOutput {
+    command: InventoryCommand,
+    exit_code: Option<i32>,
+    output: String,
+}
+
+impl InventoryOutput {
+    #[must_use]
+    pub fn success(command: InventoryCommand, output: impl AsRef<str>) -> Self {
+        Self::new(command, Some(0), output)
+    }
+
+    #[must_use]
+    pub fn failed(command: InventoryCommand, output: impl AsRef<str>) -> Self {
+        Self::new(command, Some(1), output)
+    }
+
+    #[must_use]
+    pub fn new(command: InventoryCommand, exit_code: Option<i32>, output: impl AsRef<str>) -> Self {
+        let output = output.as_ref();
+        let output = if output.len() <= MAX_INVENTORY_OUTPUT_BYTES {
+            output.to_owned()
+        } else {
+            output
+                .char_indices()
+                .take_while(|(index, _)| *index < MAX_INVENTORY_OUTPUT_BYTES)
+                .map(|(_, character)| character)
+                .collect()
+        };
+        Self {
+            command,
+            exit_code,
+            output,
+        }
+    }
+}
+
+/// Prevents partial or failed command data from being treated as inventory.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum InventoryError {
+    #[error("missing required inventory command: {command:?}")]
+    MissingCommand { command: InventoryCommand },
+    #[error("required inventory command failed: {command:?}")]
+    FailedCommand { command: InventoryCommand },
+    #[error("inventory command was supplied more than once: {command:?}")]
+    DuplicateCommand { command: InventoryCommand },
+}
+
+impl Inventory {
+    /// Creates an inventory only from all six successful, distinct required command outputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any required command is missing, duplicated, or failed.
+    pub fn from_command_outputs(outputs: &[InventoryOutput]) -> Result<Self, InventoryError> {
         let mut inventory = Self::default();
-        for (kind, output) in outputs {
-            match *kind {
-                "-hwaccels" => (*output).clone_into(&mut inventory.hwaccels),
-                "-decoders" => (*output).clone_into(&mut inventory.decoders),
-                "-encoders" => (*output).clone_into(&mut inventory.encoders),
-                "-filters" => (*output).clone_into(&mut inventory.filters),
-                _ => {}
+        let mut seen = [false; 6];
+        for output in outputs {
+            let index = output.command as usize;
+            if seen[index] {
+                return Err(InventoryError::DuplicateCommand {
+                    command: output.command,
+                });
+            }
+            if output.exit_code != Some(0) {
+                return Err(InventoryError::FailedCommand {
+                    command: output.command,
+                });
+            }
+            seen[index] = true;
+            match output.command {
+                InventoryCommand::Version => output.output.clone_into(&mut inventory.version),
+                InventoryCommand::Buildconf => output.output.clone_into(&mut inventory.buildconf),
+                InventoryCommand::Hwaccels => output.output.clone_into(&mut inventory.hwaccels),
+                InventoryCommand::Decoders => output.output.clone_into(&mut inventory.decoders),
+                InventoryCommand::Encoders => output.output.clone_into(&mut inventory.encoders),
+                InventoryCommand::Filters => output.output.clone_into(&mut inventory.filters),
             }
         }
-        inventory
+        for command in InventoryCommand::ALL {
+            if !seen[command as usize] {
+                return Err(InventoryError::MissingCommand { command });
+            }
+        }
+        Ok(inventory)
     }
 
     fn has(&self, kind: InventoryKind, component: &str) -> bool {
