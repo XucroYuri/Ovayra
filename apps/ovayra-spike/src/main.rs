@@ -22,6 +22,9 @@ use spike_contracts::{
     Evidence, MediaCpuProof, MediaForcedFallbackProof, MediaHardwareProof, PhaseZeroProof, SpikeId,
     TargetId, Verdict,
 };
+use spike_contracts::{
+    PlatformProcessProof, ProofComponent, ProofPayload, ProofRow, phase_zero_session,
+};
 use spike_gemini::GeminiClient;
 use spike_media::{
     AttemptOutcome, Backend, CpuFallback, ExecutionPolicy, FORCED_FAILURE_DEVICE, FfmpegError,
@@ -30,6 +33,7 @@ use spike_media::{
 use spike_platform::{
     EncryptedRecord, EnvelopeCipher, OsSecretStore, SecretStore, SecretStoreError,
 };
+use spike_platform::{GroupedProcess, ProcessTreeProbe};
 use spike_release::{FfmpegBundle, PackageRelease};
 use zeroize::Zeroizing;
 
@@ -159,6 +163,9 @@ fn main() -> Result<()> {
         Command::Platform {
             command: PlatformCommand::Keyring { evidence },
         } => keyring_smoke(&OsSecretStore, &evidence, evidence_target()?)?,
+        Command::Platform {
+            command: PlatformCommand::Process { evidence },
+        } => process_smoke(&evidence, &evidence_target()?)?,
         Command::Platform {
             command:
                 PlatformCommand::Tray {
@@ -418,6 +425,43 @@ fn verify_ffmpeg_bundle(bundle: &Path, evidence_path: &Path, target: TargetId) -
     write_finished_evidence(evidence_path, &evidence)?;
     result.context("FFmpeg bundle policy validation failed")?;
     println!("FFMPEG_BUNDLE=PASS license=LGPL-only source_correspondence=PASS");
+    Ok(())
+}
+
+fn process_smoke(evidence_path: &Path, target: &TargetId) -> Result<()> {
+    let executable = std::env::current_exe()?;
+    let executable = executable.to_string_lossy().into_owned();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let started = Instant::now();
+    let (parent_dead, grandchild_dead) = runtime.block_on(async {
+        let mut process = GroupedProcess::spawn(&executable, &["child-tree"]).await?;
+        let tree = process
+            .wait_for_reported_tree(Duration::from_secs(5))
+            .await?;
+        process.kill_and_wait(Duration::from_secs(5)).await?;
+        Ok::<_, spike_platform::ProcessGroupError>((
+            !ProcessTreeProbe::any_alive(&tree),
+            !ProcessTreeProbe::any_alive(&tree),
+        ))
+    })?;
+    let proof = PhaseZeroProof {
+        schema_version: 2,
+        component: ProofComponent::PlatformProcess,
+        row: ProofRow {
+            spike: SpikeId::Platform,
+            target: target.clone(),
+            session: phase_zero_session(target).map(str::to_owned),
+            backend: None,
+        },
+        proof: ProofPayload::PlatformProcess(PlatformProcessProof {
+            parent_dead,
+            grandchild_dead,
+            elapsed_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+        }),
+    };
+    write_evidence_atomic(evidence_path, &proof.to_pretty_json()?)?;
     Ok(())
 }
 

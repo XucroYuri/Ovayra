@@ -174,6 +174,11 @@ pub(crate) enum GeminiCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum PlatformCommand {
+    /// Prove grouped cancellation terminates the spawned parent and grandchild.
+    Process {
+        #[arg(long)]
+        evidence: PathBuf,
+    },
     /// Exercise the native OS keyring with a disposable binary credential.
     Keyring {
         #[arg(long)]
