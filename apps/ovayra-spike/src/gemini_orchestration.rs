@@ -484,7 +484,10 @@ pub(crate) fn write_atomic(destination: &Path, json: &str) -> std::io::Result<()
     #[cfg(unix)]
     fs::File::open(parent)?.sync_all()?;
     #[cfg(windows)]
-    fs::File::open(destination)?.sync_all()?;
+    fs::OpenOptions::new()
+        .write(true)
+        .open(destination)?
+        .sync_all()?;
     Ok(())
 }
 

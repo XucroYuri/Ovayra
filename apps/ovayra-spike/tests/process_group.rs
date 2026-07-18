@@ -18,7 +18,7 @@ async fn cancellation_terminates_parent_and_grandchild() {
 
     process.kill_and_wait(PROCESS_TIMEOUT).await.unwrap();
 
-    assert!(!ProcessTreeProbe::any_alive(&tree));
+    wait_until_tree_is_dead(&tree).await;
 }
 
 #[tokio::test]
