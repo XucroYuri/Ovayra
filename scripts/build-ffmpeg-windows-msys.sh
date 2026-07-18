@@ -9,16 +9,16 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --source-root) source_root=$2; shift 2;; --dependency-prefix) dependency_prefix=$2; shift 2;;
   --stage-root) stage_root=$2; shift 2;; --parallelism) parallelism=$2; shift 2;; *) exit 64;; esac; done
 [[ -n "$source_root" && -n "$dependency_prefix" && -n "$stage_root" && "$parallelism" =~ ^[1-9][0-9]*$ ]]
-[[ "${SOURCE_DATE_EPOCH:-}" == 1781663615 && "${CC:-}" == cl && "${CXX:-}" == cl && "${AR:-}" == lib && "${LD:-}" == link && -n "${OVAYRA_MSVC_BIN:-}" ]] || { echo 'locked epoch or MSVC tool environment missing' >&2; exit 65; }
+[[ "${SOURCE_DATE_EPOCH:-}" == 1781663615 && "${CC:-}" == cl && "${CXX:-}" == cl && "${AR:-}" == lib && "${LD:-}" == link && -n "${OVAYRA_MSVC_BIN:-}" && -n "${OVAYRA_MSYS_BIN:-}" ]] || { echo 'locked epoch or Windows tool environment missing' >&2; exit 65; }
 msvc_bin=$(cygpath -u "$OVAYRA_MSVC_BIN")
 [[ -d "$msvc_bin" ]] || { echo 'MSVC binary directory is unavailable to MSYS2' >&2; exit 65; }
 # MSYS2 also ships /usr/bin/link.exe. Keep the Visual Studio directory first so
 # libvpx and FFmpeg invoke the MSVC linker selected by VsDevCmd.
 PATH="$msvc_bin:$PATH"
 hash -r
-for tool in cl link lib nasm perl make cmake ninja cygpath sha256sum diff; do command -v "$tool" >/dev/null || { echo "required Windows build tool missing: $tool" >&2; exit 65; }; done
-make_cmd=/usr/bin/make
-[[ -x "$make_cmd" ]] || make_cmd=/usr/bin/make.exe
+for tool in cl link lib nasm perl cmake ninja cygpath sha256sum diff; do command -v "$tool" >/dev/null || { echo "required Windows build tool missing: $tool" >&2; exit 65; }; done
+msys_bin=$(cygpath -u "$OVAYRA_MSYS_BIN")
+make_cmd="$msys_bin/make.exe"
 [[ -x "$make_cmd" ]] || { echo 'MSYS GNU make must drive Visual Studio project generation' >&2; exit 65; }
 for tool in cl link lib; do
   resolved=$(command -v "$tool")

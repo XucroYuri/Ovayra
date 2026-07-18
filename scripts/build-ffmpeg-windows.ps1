@@ -24,6 +24,7 @@ foreach ($tool in 'cl.exe', 'link.exe', 'lib.exe') {
 $env:OVAYRA_MSVC_BIN = Split-Path -Parent (Get-Command cl.exe).Source
 $bash = 'C:\msys64\usr\bin\bash.exe'
 if (!(Test-Path -LiteralPath $bash)) { throw "MSYS2 bash missing: $bash" }
+$env:OVAYRA_MSYS_BIN = Split-Path -Parent $bash
 foreach ($value in @($SourceRoot, $DependencyPrefix, $StageRoot)) {
   if ([string]::IsNullOrWhiteSpace($value) -or $value.Contains("`n") -or $value.Contains("`r")) { throw 'build paths must be nonempty and newline-free' }
 }
