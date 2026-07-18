@@ -62,11 +62,11 @@ jobs:
       - name: Install native build prerequisites (Linux)
         if: runner.os == 'Linux'
         shell: bash
-        run: sudo apt-get update && sudo apt-get install --yes build-essential pkg-config nasm yasm zstd libdrm-dev libva-dev libnuma-dev
+        run: sudo apt-get update && sudo apt-get install --yes build-essential pkg-config nasm yasm zstd libdrm-dev libva-dev libnuma-dev cmake
       - name: Install native build prerequisites (macOS)
         if: runner.os == 'macOS'
         shell: bash
-        run: brew install nasm pkg-config zstd
+        run: brew install nasm pkg-config zstd cmake
       - name: Verify FFmpeg detached release signature and exact sources (POSIX)
         if: runner.os != 'Windows'
         shell: bash

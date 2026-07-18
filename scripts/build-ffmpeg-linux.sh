@@ -7,9 +7,12 @@ target_id=linux-x64-vaapi-wayland
 [[ "${SOURCE_DATE_EPOCH:-}" == 1781663615 ]] || { echo 'SOURCE_DATE_EPOCH must equal locked FFmpeg n8.1.2 value' >&2; exit 64; }
 marker="$stage_root/.ovayra-target"; [[ ! -e "$stage_root" || ( -f "$marker" && "$(<"$marker")" == "$target_id" ) ]] || exit 65
 mkdir -p "$stage_root"/{provenance,LICENSES,sbom}; export SOURCE_DATE_EPOCH CFLAGS="${CFLAGS:-} -fdebug-prefix-map=$source_root=/usr/src/ovayra"
+cmake_cmd=$(command -v cmake || true); [[ -x "$cmake_cmd" ]] || { echo 'CMake is required for the pinned Opus Git source' >&2; exit 65; }
 diff -ruN "$source_root/ffmpeg.pristine" "$source_root/ffmpeg" > "$stage_root/provenance/changes.diff" || [[ $? -eq 1 ]]
-cd "$source_root/libvpx"; ./configure --prefix="$dependency_prefix" --disable-examples --disable-tools --enable-vp9-highbitdepth; make -j"$parallelism"; make test; make install
-cd "$source_root/opus"; ./configure --prefix="$dependency_prefix" --disable-doc; make -j"$parallelism"; make check; make install
+cd "$source_root/libvpx"; ./configure --prefix="$dependency_prefix" --disable-examples --disable-tools --enable-vp9-highbitdepth; make -j"$parallelism"; make install
+opus_build="$source_root/opus-build"
+"$cmake_cmd" -S "$source_root/opus" -B "$opus_build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DOPUS_BUILD_TESTING=OFF -DOPUS_BUILD_PROGRAMS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_INSTALL_PREFIX="$dependency_prefix"
+"$cmake_cmd" --build "$opus_build" --parallel "$parallelism"; "$cmake_cmd" --install "$opus_build"
 cd "$source_root/nv-codec-headers"; make PREFIX="$dependency_prefix" install
 cd "$source_root/ffmpeg"; configure=(--prefix="$stage_root" --disable-autodetect --disable-debug --disable-doc --disable-ffplay --disable-network --enable-ffmpeg --enable-ffprobe --enable-libopus --enable-libvpx --enable-version3 --disable-gpl --disable-nonfree --enable-vaapi --enable-libdrm --enable-ffnvcodec --enable-nvenc --enable-nvdec --extra-cflags="-I$dependency_prefix/include" --extra-ldflags="-L$dependency_prefix/lib"); ./configure "${configure[@]}"; make -j"$parallelism"
 fate_smoke_targets=(fate-lavf-mkv fate-filter-testsrc2-yuv420p fate-filter-aloop)

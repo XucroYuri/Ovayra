@@ -18,7 +18,18 @@ for script in "$root/scripts/build-ffmpeg-linux.sh" "$windows_bash"; do
 done
 if rg -F -- '--host=x86_64-w64-mingw32' "$windows_bash"; then echo 'MinGW Opus target is forbidden' >&2; exit 1; fi
 for requirement in 'id: msys2' 'steps.msys2.outputs.msys2-location' 'ffmpeg-stable' '$ErrorActionPreference = '\''Stop'\'''; do rg -F -- "$requirement" "$workflow" >/dev/null; done
+rg -F -- 'libnuma-dev cmake' "$workflow" >/dev/null
+rg -F -- 'brew install nasm pkg-config zstd cmake' "$workflow" >/dev/null
 rg -F -- 'compare-ffmpeg-reproducibility.sh target/ffmpeg-a-stage target/ffmpeg-b-stage' "$workflow" >/dev/null
+for script in scripts/build-ffmpeg-linux.sh scripts/build-ffmpeg-macos.sh; do
+  for requirement in 'cmake_cmd=$(command -v cmake || true)' 'opus-build' 'OPUS_BUILD_TESTING=OFF' 'OPUS_BUILD_PROGRAMS=OFF' 'CMAKE_POSITION_INDEPENDENT_CODE=ON' '"$cmake_cmd" --build' '"$cmake_cmd" --install'; do
+    rg -F --quiet "$requirement" "$script"
+  done
+  if rg -F -- 'make test' "$script" || rg -F -- 'cd "$source_root/opus"; ./configure' "$script"; then
+    echo 'POSIX dependency builds must use bounded runtime validation and CMake Opus sources' >&2
+    exit 1
+  fi
+done
 for script in scripts/build-ffmpeg-linux.sh scripts/build-ffmpeg-macos.sh scripts/build-ffmpeg-windows-msys.sh; do
   rg -F --quiet '{ printf '\''configuration: '\''' "$script"
   rg -F --quiet '} > "$stage_root/provenance/buildconf.txt"' "$script"
