@@ -477,7 +477,8 @@ pub(crate) fn write_atomic(destination: &Path, json: &str) -> std::io::Result<()
     temporary.write_all(json.as_bytes())?;
     temporary.flush()?;
     temporary.as_file().sync_all()?;
-    temporary
+    let temporary_path = temporary.into_temp_path();
+    temporary_path
         .persist(destination)
         .map_err(|error| error.error)?;
     #[cfg(unix)]

@@ -158,7 +158,8 @@ fn write_report_atomic(destination: &Path, contents: &str) -> Result<()> {
     temporary.write_all(contents.as_bytes())?;
     temporary.flush()?;
     temporary.as_file().sync_all()?;
-    temporary
+    let temporary_path = temporary.into_temp_path();
+    temporary_path
         .persist(destination)
         .map_err(|error| error.error)?;
     #[cfg(unix)]
