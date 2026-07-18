@@ -22,7 +22,9 @@ foreach ($tool in 'cl.exe', 'link.exe', 'lib.exe') {
   if (!(Get-Command $tool -ErrorAction SilentlyContinue)) { throw "MSVC tool unavailable after VsDevCmd: $tool" }
 }
 $env:OVAYRA_MSVC_BIN = Split-Path -Parent (Get-Command cl.exe).Source
-$bash = 'C:\msys64\usr\bin\bash.exe'
+$msys2Location = $env:MSYS2_LOCATION
+if ([string]::IsNullOrWhiteSpace($msys2Location)) { throw 'MSYS2_LOCATION is missing' }
+$bash = Join-Path $msys2Location 'usr\bin\bash.exe'
 if (!(Test-Path -LiteralPath $bash)) { throw "MSYS2 bash missing: $bash" }
 $env:OVAYRA_MSYS_BIN = Split-Path -Parent $bash
 foreach ($value in @($SourceRoot, $DependencyPrefix, $StageRoot)) {

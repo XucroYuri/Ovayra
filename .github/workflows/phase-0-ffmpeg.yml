@@ -50,6 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        id: msys2
         if: runner.os == 'Windows'
         with:
           msystem: UCRT64
@@ -141,10 +142,12 @@ jobs:
       - name: Build clean bundle A and B, validate policy, capabilities, and CPU smoke (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: |
           $env:SOURCE_DATE_EPOCH = (Get-Content target/ffmpeg-source/source-date-epoch -Raw).Trim()
           if ($env:SOURCE_DATE_EPOCH -ne '1781663615') { throw 'FFmpeg source-date epoch does not match lock' }
-          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $bash = Join-Path $env:MSYS2_LOCATION 'usr\bin\bash.exe'
           if (!(Test-Path -LiteralPath $bash)) { throw 'MSYS2 bash missing' }
           $stable = Join-Path $env:GITHUB_WORKSPACE 'target/ffmpeg-stable'
           foreach ($build in 'a', 'b') {
