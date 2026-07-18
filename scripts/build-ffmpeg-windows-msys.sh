@@ -17,7 +17,9 @@ msvc_bin=$(cygpath -u "$OVAYRA_MSVC_BIN")
 PATH="$msvc_bin:$PATH"
 hash -r
 for tool in cl link lib nasm perl make cmake ninja cygpath sha256sum diff; do command -v "$tool" >/dev/null || { echo "required Windows build tool missing: $tool" >&2; exit 65; }; done
-[[ "$(command -v make)" == /usr/bin/make || "$(command -v make)" == /usr/bin/make.exe ]] || { echo 'MSYS GNU make must drive Visual Studio project generation' >&2; exit 65; }
+make_cmd=/usr/bin/make
+[[ -x "$make_cmd" ]] || make_cmd=/usr/bin/make.exe
+[[ -x "$make_cmd" ]] || { echo 'MSYS GNU make must drive Visual Studio project generation' >&2; exit 65; }
 for tool in cl link lib; do
   resolved=$(command -v "$tool")
   [[ "$resolved" == "$msvc_bin/$tool" || "$resolved" == "$msvc_bin/$tool.exe" ]] || { echo "MSYS2 resolved a non-MSVC $tool executable" >&2; exit 65; }
@@ -34,16 +36,16 @@ cd "$source_root/libvpx"
 # makes its GNU-style probe pass `-o` flags directly to cl.exe before the
 # generated MSBuild project exists.
 env -u CC -u CXX -u AR -u LD ./configure --target=x86_64-win64-vs17 --prefix="$(cygpath -m "$dependency_prefix")" --disable-examples --disable-tools --enable-vp9-highbitdepth
-make -j"$parallelism"; make install
+"$make_cmd" -j"$parallelism"; "$make_cmd" install
 cmake -S "$source_root/opus" -B "$source_root/opus-msvc" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$dependency_prefix")"
 cmake --build "$source_root/opus-msvc" --parallel "$parallelism"; cmake --install "$source_root/opus-msvc"
 test -f "$dependency_prefix/include/opus/opus.h"
-cd "$source_root/nv-codec-headers"; make PREFIX="$(cygpath -m "$dependency_prefix")" install
+cd "$source_root/nv-codec-headers"; "$make_cmd" PREFIX="$(cygpath -m "$dependency_prefix")" install
 test -f "$dependency_prefix/include/ffnvcodec/nvEncodeAPI.h"
 cd "$source_root/ffmpeg"
 prefix_win=$(cygpath -m "$dependency_prefix")
 configure=(--prefix="$(cygpath -m "$stage_root")" --toolchain=msvc --target-os=win32 --arch=x86_64 --disable-autodetect --disable-debug --disable-doc --disable-ffplay --disable-network --enable-ffmpeg --enable-ffprobe --enable-libopus --enable-libvpx --enable-version3 --disable-gpl --disable-nonfree --enable-d3d11va --enable-dxva2 --enable-mediafoundation --enable-nvenc --enable-nvdec --extra-cflags="-I$prefix_win/include" --extra-ldflags="-LIBPATH:$prefix_win/lib" --extra-libs="opus.lib vpx.lib")
-./configure "${configure[@]}"; make -j"$parallelism"; fate_targets=$(make fate-list | grep -E '^fate-(lavf-matroska|vp9|opus)' | head -n 3 || true); [[ -n "$fate_targets" ]] || exit 66; set -- $fate_targets; make "$@"; make install
+./configure "${configure[@]}"; "$make_cmd" -j"$parallelism"; fate_targets=$("$make_cmd" fate-list | grep -E '^fate-(lavf-matroska|vp9|opus)' | head -n 3 || true); [[ -n "$fate_targets" ]] || exit 66; set -- $fate_targets; "$make_cmd" "$@"; "$make_cmd" install
 test -f "$stage_root/bin/ffmpeg.exe" && test -f "$stage_root/bin/ffprobe.exe"
 { printf 'configuration: '; printf '%q ' "${configure[@]}"; printf '\n'; } > "$stage_root/provenance/buildconf.txt"
 cp "$source_root"/{ffmpeg-8.1.2.tar.xz,ffmpeg-8.1.2.tar.xz.asc,libvpx-source.tar.zst,opus-source.tar.zst,nv-codec-headers-source.tar.zst,ffmpeg-signature-attestation.json} "$stage_root/provenance/"
