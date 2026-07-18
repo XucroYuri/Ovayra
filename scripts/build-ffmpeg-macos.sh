@@ -28,10 +28,14 @@ opus_build="$source_root/opus-build"
 "$cmake_cmd" -S "$source_root/opus" -B "$opus_build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DOPUS_BUILD_TESTING=OFF -DOPUS_BUILD_PROGRAMS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_INSTALL_PREFIX="$dependency_prefix"
 "$cmake_cmd" --build "$opus_build" --parallel "$parallelism"; "$cmake_cmd" --install "$opus_build"
 cd "$source_root/ffmpeg"
-configure=(--prefix="$stage_root" --disable-autodetect --disable-debug --disable-doc --disable-ffplay --disable-network --enable-ffmpeg --enable-ffprobe --enable-libopus --enable-libvpx --enable-version3 --disable-gpl --disable-nonfree --enable-videotoolbox --enable-audiotoolbox --extra-cflags="-I$dependency_prefix/include" --extra-ldflags="-L$dependency_prefix/lib")
+configure=(--prefix="$stage_root" --pkg-config-flags=--static --disable-autodetect --disable-debug --disable-doc --disable-ffplay --disable-network --enable-ffmpeg --enable-ffprobe --enable-libopus --enable-libvpx --enable-version3 --disable-gpl --disable-nonfree --enable-videotoolbox --enable-audiotoolbox --extra-cflags="-I$dependency_prefix/include" --extra-ldflags="-L$dependency_prefix/lib")
 { printf 'configuration: '; printf '%q ' "${configure[@]}"; printf '\n'; } > "$stage_root/provenance/buildconf.txt"
 pkg_config_dir="$dependency_prefix/lib/pkgconfig"
-PKG_CONFIG_PATH="$pkg_config_dir" PKG_CONFIG_LIBDIR="$pkg_config_dir" ./configure "${configure[@]}"; make -j"$parallelism"
+if ! PKG_CONFIG_PATH="$pkg_config_dir" PKG_CONFIG_LIBDIR="$pkg_config_dir" ./configure "${configure[@]}"; then
+  tail -n 200 ffbuild/config.log >&2 || true
+  exit 1
+fi
+make -j"$parallelism"
 fate_smoke_targets=(fate-lavf-mkv fate-filter-testsrc2-yuv420p fate-filter-aloop)
 available_fate_targets=$(make fate-list | tr -d '\r')
 for fate_target in "${fate_smoke_targets[@]}"; do

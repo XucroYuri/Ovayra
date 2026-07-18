@@ -22,14 +22,16 @@ rg -F -- 'libnuma-dev cmake' "$workflow" >/dev/null
 rg -F -- 'brew install nasm pkg-config zstd cmake' "$workflow" >/dev/null
 rg -F -- 'compare-ffmpeg-reproducibility.sh target/ffmpeg-a-stage target/ffmpeg-b-stage' "$workflow" >/dev/null
 for script in scripts/build-ffmpeg-linux.sh scripts/build-ffmpeg-macos.sh; do
-  for requirement in 'script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)' 'repo_root=$(cd "$script_dir/.." && pwd)' 'cmake_cmd=$(command -v cmake || true)' 'opus-build' 'OPUS_BUILD_TESTING=OFF' 'OPUS_BUILD_PROGRAMS=OFF' 'CMAKE_POSITION_INDEPENDENT_CODE=ON' '"$cmake_cmd" --build' '"$cmake_cmd" --install' 'PKG_CONFIG_LIBDIR="$pkg_config_dir"'; do
-    rg -F --quiet "$requirement" "$script"
+  for requirement in 'script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)' 'repo_root=$(cd "$script_dir/.." && pwd)' 'cmake_cmd=$(command -v cmake || true)' 'opus-build' 'OPUS_BUILD_TESTING=OFF' 'OPUS_BUILD_PROGRAMS=OFF' 'CMAKE_POSITION_INDEPENDENT_CODE=ON' '"$cmake_cmd" --build' '"$cmake_cmd" --install' '--pkg-config-flags=--static' 'PKG_CONFIG_LIBDIR="$pkg_config_dir' 'tail -n 200 ffbuild/config.log'; do
+    rg -F --quiet -- "$requirement" "$script"
   done
   if rg -F -- 'make test' "$script" || rg -F -- 'cd "$source_root/opus"; ./configure' "$script" || rg -F -- '$(dirname "$0")/../packaging' "$script"; then
     echo 'POSIX dependency builds must use bounded runtime validation, CMake Opus sources, and stable repository paths' >&2
     exit 1
   fi
 done
+rg -F --quiet -- 'system_pkg_config_dirs=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig' scripts/build-ffmpeg-linux.sh
+rg -F --quiet -- 'PKG_CONFIG_LIBDIR="$pkg_config_dir:$system_pkg_config_dirs"' scripts/build-ffmpeg-linux.sh
 for script in scripts/build-ffmpeg-linux.sh scripts/build-ffmpeg-macos.sh scripts/build-ffmpeg-windows-msys.sh; do
   rg -F --quiet '{ printf '\''configuration: '\''' "$script"
   rg -F --quiet '} > "$stage_root/provenance/buildconf.txt"' "$script"
