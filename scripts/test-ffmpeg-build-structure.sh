@@ -22,11 +22,11 @@ rg -F -- 'libnuma-dev cmake' "$workflow" >/dev/null
 rg -F -- 'brew install nasm pkg-config zstd cmake' "$workflow" >/dev/null
 rg -F -- 'compare-ffmpeg-reproducibility.sh target/ffmpeg-a-stage target/ffmpeg-b-stage' "$workflow" >/dev/null
 for script in scripts/build-ffmpeg-linux.sh scripts/build-ffmpeg-macos.sh; do
-  for requirement in 'cmake_cmd=$(command -v cmake || true)' 'opus-build' 'OPUS_BUILD_TESTING=OFF' 'OPUS_BUILD_PROGRAMS=OFF' 'CMAKE_POSITION_INDEPENDENT_CODE=ON' '"$cmake_cmd" --build' '"$cmake_cmd" --install'; do
+  for requirement in 'script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)' 'repo_root=$(cd "$script_dir/.." && pwd)' 'cmake_cmd=$(command -v cmake || true)' 'opus-build' 'OPUS_BUILD_TESTING=OFF' 'OPUS_BUILD_PROGRAMS=OFF' 'CMAKE_POSITION_INDEPENDENT_CODE=ON' '"$cmake_cmd" --build' '"$cmake_cmd" --install' 'PKG_CONFIG_LIBDIR="$pkg_config_dir"'; do
     rg -F --quiet "$requirement" "$script"
   done
-  if rg -F -- 'make test' "$script" || rg -F -- 'cd "$source_root/opus"; ./configure' "$script"; then
-    echo 'POSIX dependency builds must use bounded runtime validation and CMake Opus sources' >&2
+  if rg -F -- 'make test' "$script" || rg -F -- 'cd "$source_root/opus"; ./configure' "$script" || rg -F -- '$(dirname "$0")/../packaging' "$script"; then
+    echo 'POSIX dependency builds must use bounded runtime validation, CMake Opus sources, and stable repository paths' >&2
     exit 1
   fi
 done

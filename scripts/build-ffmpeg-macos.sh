@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd "$script_dir/.." && pwd)
 source_root= dependency_prefix= stage_root= parallelism=
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -28,7 +30,8 @@ opus_build="$source_root/opus-build"
 cd "$source_root/ffmpeg"
 configure=(--prefix="$stage_root" --disable-autodetect --disable-debug --disable-doc --disable-ffplay --disable-network --enable-ffmpeg --enable-ffprobe --enable-libopus --enable-libvpx --enable-version3 --disable-gpl --disable-nonfree --enable-videotoolbox --enable-audiotoolbox --extra-cflags="-I$dependency_prefix/include" --extra-ldflags="-L$dependency_prefix/lib")
 { printf 'configuration: '; printf '%q ' "${configure[@]}"; printf '\n'; } > "$stage_root/provenance/buildconf.txt"
-PKG_CONFIG_PATH="$dependency_prefix/lib/pkgconfig" ./configure "${configure[@]}"; make -j"$parallelism"
+pkg_config_dir="$dependency_prefix/lib/pkgconfig"
+PKG_CONFIG_PATH="$pkg_config_dir" PKG_CONFIG_LIBDIR="$pkg_config_dir" ./configure "${configure[@]}"; make -j"$parallelism"
 fate_smoke_targets=(fate-lavf-mkv fate-filter-testsrc2-yuv420p fate-filter-aloop)
 available_fate_targets=$(make fate-list | tr -d '\r')
 for fate_target in "${fate_smoke_targets[@]}"; do
@@ -38,8 +41,8 @@ make "${fate_smoke_targets[@]}"; make install
 cp "$source_root/ffmpeg-8.1.2.tar.xz" "$source_root/ffmpeg-8.1.2.tar.xz.asc" "$stage_root/provenance/"
 cp "$source_root/libvpx-source.tar.zst" "$source_root/opus-source.tar.zst" "$stage_root/provenance/"
 cp "$source_root/ffmpeg/COPYING.LGPLv2.1" "$stage_root/LICENSES/FFmpeg-LGPL-2.1-or-later.txt"; cp "$source_root/libvpx/LICENSE" "$stage_root/LICENSES/libvpx-BSD-3-Clause.txt"; cp "$source_root/opus/COPYING" "$stage_root/LICENSES/Opus-BSD-3-Clause.txt"
-cp "$(dirname "$0")/../packaging/NOTICE.txt" "$stage_root/NOTICE.txt"
-cp "$(dirname "$0")/../packaging/ffmpeg.lock" "$stage_root/provenance/ffmpeg.lock"; cp "$source_root/ffmpeg-signature-attestation.json" "$stage_root/provenance/"
+cp "$repo_root/packaging/NOTICE.txt" "$stage_root/NOTICE.txt"
+cp "$repo_root/packaging/ffmpeg.lock" "$stage_root/provenance/ffmpeg.lock"; cp "$source_root/ffmpeg-signature-attestation.json" "$stage_root/provenance/"
 ffmpeg_hash=$(shasum -a 256 "$stage_root/provenance/ffmpeg-8.1.2.tar.xz" | awk '{print $1}'); libvpx_hash=$(shasum -a 256 "$stage_root/provenance/libvpx-source.tar.zst" | awk '{print $1}'); opus_hash=$(shasum -a 256 "$stage_root/provenance/opus-source.tar.zst" | awk '{print $1}')
 printf '{"bomFormat":"CycloneDX","specVersion":"1.5","components":[{"name":"FFmpeg","version":"8.1.2","hashes":[{"alg":"SHA-256","content":"%s"}],"licenses":[{"license":{"id":"LGPL-2.1-or-later"}}]},{"name":"libvpx","version":"1.16.0","hashes":[{"alg":"SHA-256","content":"%s"}],"licenses":[{"license":{"id":"BSD-3-Clause"}}]},{"name":"opus","version":"1.6.1","hashes":[{"alg":"SHA-256","content":"%s"}],"licenses":[{"license":{"id":"BSD-3-Clause"}}]}]}' "$ffmpeg_hash" "$libvpx_hash" "$opus_hash" > "$stage_root/sbom/ffmpeg.cdx.json"
 printf '%s\n' "$target_triple" > "$marker"
