@@ -9,6 +9,12 @@ for requirement in 'PATH="/usr/bin:/ucrt64/bin:$PATH"' 'OVAYRA_MSYS_BIN' 'OVAYRA
   rg -F -- "$requirement" "$windows_bash" >/dev/null
 done
 rg -F -- '--enable-ffnvcodec' "$root/scripts/build-ffmpeg-linux.sh" >/dev/null
+nv_license="$root/packaging/licenses/nv-codec-headers-MIT.txt"
+test -s "$nv_license"
+for script in "$root/scripts/build-ffmpeg-linux.sh" "$windows_bash"; do
+  rg -F -- 'packaging/licenses/nv-codec-headers-MIT.txt' "$script" >/dev/null
+  if rg -F -- 'nv-codec-headers/LICENSE' "$script"; then echo 'nv-codec-headers has no standalone LICENSE file at the pinned tag' >&2; exit 1; fi
+done
 if rg -F -- '--host=x86_64-w64-mingw32' "$windows_bash"; then echo 'MinGW Opus target is forbidden' >&2; exit 1; fi
 for requirement in 'id: msys2' 'steps.msys2.outputs.msys2-location' 'ffmpeg-stable'; do rg -F -- "$requirement" "$workflow" >/dev/null; done
 rg -F -- 'compare-ffmpeg-reproducibility.sh target/ffmpeg-a-stage target/ffmpeg-b-stage' "$workflow" >/dev/null
