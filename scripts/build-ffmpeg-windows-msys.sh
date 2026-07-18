@@ -57,7 +57,13 @@ if ! ./configure "${configure[@]}"; then
   tail -n 200 ffbuild/config.log >&2 || true
   exit 1
 fi
-"$make_cmd" -j"$parallelism"; fate_targets=$("$make_cmd" fate-list | grep -E '^fate-(lavf-matroska|vp9|opus)' | head -n 3 || true); [[ -n "$fate_targets" ]] || exit 66; set -- $fate_targets; "$make_cmd" "$@"; "$make_cmd" install
+"$make_cmd" -j"$parallelism"
+fate_smoke_targets=(fate-lavf-mkv fate-filter-testsrc2-yuv420p fate-filter-aloop)
+available_fate_targets=$("$make_cmd" fate-list | tr -d '\r')
+for fate_target in "${fate_smoke_targets[@]}"; do
+  grep -Fqx -- "$fate_target" <<< "$available_fate_targets" || { echo "required FATE smoke target unavailable: $fate_target" >&2; exit 66; }
+done
+"$make_cmd" "${fate_smoke_targets[@]}"; "$make_cmd" install
 test -f "$stage_root/bin/ffmpeg.exe" && test -f "$stage_root/bin/ffprobe.exe"
 { printf 'configuration: '; printf '%q ' "${configure[@]}"; printf '\n'; } > "$stage_root/provenance/buildconf.txt"
 cp "$source_root"/{ffmpeg-8.1.2.tar.xz,ffmpeg-8.1.2.tar.xz.asc,libvpx-source.tar.zst,opus-source.tar.zst,nv-codec-headers-source.tar.zst,ffmpeg-signature-attestation.json} "$stage_root/provenance/"

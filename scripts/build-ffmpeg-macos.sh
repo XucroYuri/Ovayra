@@ -25,7 +25,12 @@ cd "$source_root/ffmpeg"
 configure=(--prefix="$stage_root" --disable-autodetect --disable-debug --disable-doc --disable-ffplay --disable-network --enable-ffmpeg --enable-ffprobe --enable-libopus --enable-libvpx --enable-version3 --disable-gpl --disable-nonfree --enable-videotoolbox --enable-audiotoolbox --extra-cflags="-I$dependency_prefix/include" --extra-ldflags="-L$dependency_prefix/lib")
 { printf 'configuration: '; printf '%q ' "${configure[@]}"; printf '\n'; } > "$stage_root/provenance/buildconf.txt"
 PKG_CONFIG_PATH="$dependency_prefix/lib/pkgconfig" ./configure "${configure[@]}"; make -j"$parallelism"
-fate_targets=$(make fate-list | grep -E '^fate-(lavf-matroska|vp9|opus)' | head -n 3 || true); [[ -n "$fate_targets" ]] || { echo 'required FATE smoke targets unavailable' >&2; exit 66; }; set -- $fate_targets; make "$@"; make install
+fate_smoke_targets=(fate-lavf-mkv fate-filter-testsrc2-yuv420p fate-filter-aloop)
+available_fate_targets=$(make fate-list | tr -d '\r')
+for fate_target in "${fate_smoke_targets[@]}"; do
+  grep -Fqx -- "$fate_target" <<< "$available_fate_targets" || { echo "required FATE smoke target unavailable: $fate_target" >&2; exit 66; }
+done
+make "${fate_smoke_targets[@]}"; make install
 cp "$source_root/ffmpeg-8.1.2.tar.xz" "$source_root/ffmpeg-8.1.2.tar.xz.asc" "$stage_root/provenance/"
 cp "$source_root/libvpx-source.tar.zst" "$source_root/opus-source.tar.zst" "$stage_root/provenance/"
 cp "$source_root/ffmpeg/COPYING.LGPLv2.1" "$stage_root/LICENSES/FFmpeg-LGPL-2.1-or-later.txt"; cp "$source_root/libvpx/LICENSE" "$stage_root/LICENSES/libvpx-BSD-3-Clause.txt"; cp "$source_root/opus/COPYING" "$stage_root/LICENSES/Opus-BSD-3-Clause.txt"

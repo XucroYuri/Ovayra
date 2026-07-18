@@ -15,6 +15,9 @@ rg -F -- 'compare-ffmpeg-reproducibility.sh target/ffmpeg-a-stage target/ffmpeg-
 for script in scripts/build-ffmpeg-linux.sh scripts/build-ffmpeg-macos.sh scripts/build-ffmpeg-windows-msys.sh; do
   rg -F --quiet '{ printf '\''configuration: '\''' "$script"
   rg -F --quiet '} > "$stage_root/provenance/buildconf.txt"' "$script"
+  for fate_target in fate-lavf-mkv fate-filter-testsrc2-yuv420p fate-filter-aloop; do
+    rg -F --quiet "$fate_target" "$script"
+  done
 done
 for requirement in '"scripts/**"' '"crates/**"' 'target/ffmpeg-a-stage/**' 'target/ffmpeg-b-stage/**' 'target/ffmpeg-a-cpu-evidence.json' 'target/ffmpeg-b-cpu-evidence.json' 'if-no-files-found: error'; do
   rg -F -- "$requirement" "$workflow" >/dev/null
