@@ -10,6 +10,7 @@ on:
       - "apps/ovayra-spike/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".gitattributes"
       - ".github/workflows/phase-0-ffmpeg.yml"
   push:
     branches: [main]
@@ -22,6 +23,7 @@ on:
       - "apps/ovayra-spike/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".gitattributes"
       - ".github/workflows/phase-0-ffmpeg.yml"
   workflow_dispatch:
 

@@ -10,6 +10,7 @@ on:
       - "docs/phase-0/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".gitattributes"
       - "rust-toolchain.toml"
       - ".github/workflows/**"
   push:
@@ -22,6 +23,7 @@ on:
       - "docs/phase-0/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".gitattributes"
       - "rust-toolchain.toml"
       - ".github/workflows/**"
   workflow_dispatch:
