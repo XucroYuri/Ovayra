@@ -150,27 +150,42 @@ impl ProgressParser {
 
     fn parse_number(&self, key: &str) -> Result<Option<u64>, ProgressError> {
         self.current.get(key).map_or(Ok(None), |value| {
+            let value = value.trim();
+            if value == "N/A" {
+                return Ok(None);
+            }
             value
                 .parse()
                 .map(Some)
                 .map_err(|_| ProgressError::InvalidNumber {
                     key: key.to_owned(),
-                    value: value.clone(),
+                    value: value.to_owned(),
                 })
         })
     }
 
     fn parse_speed(&self) -> Result<Option<f64>, ProgressError> {
         self.current.get("speed").map_or(Ok(None), |value| {
-            value
+            let value = value.trim();
+            if value == "N/A" {
+                return Ok(None);
+            }
+            let parsed = value
                 .strip_suffix('x')
                 .unwrap_or(value)
-                .parse()
-                .map(Some)
+                .trim()
+                .parse::<f64>()
                 .map_err(|_| ProgressError::InvalidNumber {
                     key: "speed".to_owned(),
-                    value: value.clone(),
-                })
+                    value: value.to_owned(),
+                })?;
+            if !parsed.is_finite() || parsed.is_sign_negative() {
+                return Err(ProgressError::InvalidNumber {
+                    key: "speed".to_owned(),
+                    value: value.to_owned(),
+                });
+            }
+            Ok(Some(parsed))
         })
     }
 }

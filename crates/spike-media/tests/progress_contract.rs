@@ -41,6 +41,39 @@ fn rejects_malformed_known_numeric_values() {
 }
 
 #[test]
+fn accepts_ffmpeg_na_and_padded_progress_numbers() {
+    let input = b"frame=0\nout_time_us=N/A\nspeed=N/A\nprogress=continue\nframe= 12 \nout_time_us= 250000 \nspeed=   1.25x\nprogress=end\n";
+    let events = ProgressParser::default().push(input).unwrap();
+    assert_eq!(
+        events,
+        vec![
+            ProgressEvent {
+                frame: Some(0),
+                out_time_us: None,
+                speed: None,
+                finished: false,
+            },
+            ProgressEvent {
+                frame: Some(12),
+                out_time_us: Some(250_000),
+                speed: Some(1.25),
+                finished: true,
+            },
+        ]
+    );
+}
+
+#[test]
+fn rejects_non_finite_or_negative_speeds() {
+    for speed in ["NaNx", "infx", "-1x"] {
+        let error = ProgressParser::default()
+            .push(format!("speed={speed}\nprogress=end\n").as_bytes())
+            .unwrap_err();
+        assert!(matches!(error, ProgressError::InvalidNumber { key, .. } if key == "speed"));
+    }
+}
+
+#[test]
 fn rejects_pending_input_larger_than_64_kib() {
     let error = ProgressParser::default()
         .push(&vec![b'x'; 65_537])
