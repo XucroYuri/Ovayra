@@ -55,7 +55,7 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
-            base-devel git make nasm yasm perl cmake ninja pkgconf zstd gnupg autoconf automake libtool
+            base-devel curl git make nasm yasm perl cmake ninja pkgconf zstd gnupg autoconf automake libtool
       - name: Install native build prerequisites (Linux)
         if: runner.os == 'Linux'
         shell: bash
@@ -94,31 +94,31 @@ jobs:
           git -C target/ffmpeg-source/nv-codec-headers archive --format=tar HEAD | zstd -T0 -o target/ffmpeg-source/nv-codec-headers-source.tar.zst
       - name: Verify FFmpeg detached release signature and exact sources (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: msys2 {0}
         run: |
-          New-Item -ItemType Directory -Force target/ffmpeg-source | Out-Null
-          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile target/ffmpeg-source/ffmpeg-8.1.2.tar.xz
-          Invoke-WebRequest -Uri $env:FFMPEG_ASC_URL -OutFile target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc
-          Invoke-WebRequest -Uri $env:FFMPEG_KEY_URL -OutFile target/ffmpeg-source/ffmpeg-devel.asc
-          & 'C:\msys64\usr\bin\bash.exe' scripts/verify-ffmpeg-signature.sh --key target/ffmpeg-source/ffmpeg-devel.asc --tar target/ffmpeg-source/ffmpeg-8.1.2.tar.xz --signature target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc --fingerprint FCF986EA15E6E293A5644F10B4322F04D67658D8 --attestation target/ffmpeg-source/ffmpeg-signature-attestation.json
-          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg signature helper failed' }
-          if ((Get-FileHash target/ffmpeg-source/ffmpeg-8.1.2.tar.xz -Algorithm SHA256).Hash.ToLower() -ne '464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c') { throw 'FFmpeg hash mismatch' }
-          git clone --depth 1 --branch v1.16.0 $env:LIBVPX_REPOSITORY target/ffmpeg-source/libvpx
-          if ((git -C target/ffmpeg-source/libvpx rev-parse HEAD) -ne '1024874c5919305883187e2953de8fcb4c3d7fa6') { throw 'libvpx tag mismatch' }
-          git clone --depth 1 --branch v1.6.1 $env:OPUS_REPOSITORY target/ffmpeg-source/opus
-          if ((git -C target/ffmpeg-source/opus rev-parse HEAD) -ne '22244de5a79bd1d6d623c32e72bf1954b56235be') { throw 'Opus tag mismatch' }
+          set -euo pipefail
+          mkdir -p target/ffmpeg-source
+          curl --fail --location --proto '=https' --tlsv1.2 -o target/ffmpeg-source/ffmpeg-8.1.2.tar.xz "$FFMPEG_URL"
+          curl --fail --location --proto '=https' --tlsv1.2 -o target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc "$FFMPEG_ASC_URL"
+          curl --fail --location --proto '=https' --tlsv1.2 -o target/ffmpeg-source/ffmpeg-devel.asc "$FFMPEG_KEY_URL"
+          bash scripts/verify-ffmpeg-signature.sh --key target/ffmpeg-source/ffmpeg-devel.asc --tar target/ffmpeg-source/ffmpeg-8.1.2.tar.xz --signature target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc --fingerprint FCF986EA15E6E293A5644F10B4322F04D67658D8 --attestation target/ffmpeg-source/ffmpeg-signature-attestation.json
+          test "$(sha256sum target/ffmpeg-source/ffmpeg-8.1.2.tar.xz | awk '{print $1}')" = 464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c
+          git clone --depth 1 --branch v1.16.0 "$LIBVPX_REPOSITORY" target/ffmpeg-source/libvpx
+          test "$(git -C target/ffmpeg-source/libvpx rev-parse HEAD)" = 1024874c5919305883187e2953de8fcb4c3d7fa6
+          git clone --depth 1 --branch v1.6.1 "$OPUS_REPOSITORY" target/ffmpeg-source/opus
+          test "$(git -C target/ffmpeg-source/opus rev-parse HEAD)" = 22244de5a79bd1d6d623c32e72bf1954b56235be
           tar -xJf target/ffmpeg-source/ffmpeg-8.1.2.tar.xz -C target/ffmpeg-source
-          Move-Item target/ffmpeg-source/ffmpeg-8.1.2 target/ffmpeg-source/ffmpeg
-          Copy-Item target/ffmpeg-source/ffmpeg target/ffmpeg-source/ffmpeg.pristine -Recurse
+          mv target/ffmpeg-source/ffmpeg-8.1.2 target/ffmpeg-source/ffmpeg
+          cp -R target/ffmpeg-source/ffmpeg target/ffmpeg-source/ffmpeg.pristine
           git clone --depth 1 --branch n8.1.2 https://github.com/FFmpeg/FFmpeg.git target/ffmpeg-release-metadata
-          if ((git -C target/ffmpeg-release-metadata rev-parse HEAD) -ne '38b88335f99e76ed89ff3c93f877fdefce736c13') { throw 'FFmpeg tag mismatch' }
-          $env:SOURCE_DATE_EPOCH = git -C target/ffmpeg-release-metadata log -1 --format=%ct
-          if ($env:SOURCE_DATE_EPOCH.Trim() -ne '1781663615') { throw 'FFmpeg source-date epoch does not match lock' }
-          $env:SOURCE_DATE_EPOCH | Set-Content target/ffmpeg-source/source-date-epoch -NoNewline
+          test "$(git -C target/ffmpeg-release-metadata rev-parse HEAD)" = 38b88335f99e76ed89ff3c93f877fdefce736c13
+          SOURCE_DATE_EPOCH="$(git -C target/ffmpeg-release-metadata log -1 --format=%ct)"
+          test "$SOURCE_DATE_EPOCH" = 1781663615
+          printf '%s\n' "$SOURCE_DATE_EPOCH" > target/ffmpeg-source/source-date-epoch
           git -C target/ffmpeg-source/libvpx archive --format=tar HEAD | zstd -T0 -o target/ffmpeg-source/libvpx-source.tar.zst
           git -C target/ffmpeg-source/opus archive --format=tar HEAD | zstd -T0 -o target/ffmpeg-source/opus-source.tar.zst
-          git clone --depth 1 --branch n13.0.19.0 $env:NV_CODEC_HEADERS_REPOSITORY target/ffmpeg-source/nv-codec-headers
-          if ((git -C target/ffmpeg-source/nv-codec-headers rev-parse HEAD) -ne 'e844e5b26f46bb77479f063029595293aa8f812d') { throw 'NV codec headers tag mismatch' }
+          git clone --depth 1 --branch n13.0.19.0 "$NV_CODEC_HEADERS_REPOSITORY" target/ffmpeg-source/nv-codec-headers
+          test "$(git -C target/ffmpeg-source/nv-codec-headers rev-parse HEAD)" = e844e5b26f46bb77479f063029595293aa8f812d
           git -C target/ffmpeg-source/nv-codec-headers archive --format=tar HEAD | zstd -T0 -o target/ffmpeg-source/nv-codec-headers-source.tar.zst
       - name: Build clean bundle A and B, validate policy, capabilities, and CPU smoke (POSIX)
         if: runner.os != 'Windows'

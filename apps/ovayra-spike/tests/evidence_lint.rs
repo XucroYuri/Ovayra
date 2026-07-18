@@ -1,10 +1,12 @@
 use std::{
     fs,
-    path::Path,
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(unix)]
+use std::path::Path;
 
 use spike_contracts::{PhaseZeroProof, PreviewProof, TargetId};
 

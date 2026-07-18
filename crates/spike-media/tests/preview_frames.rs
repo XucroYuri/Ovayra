@@ -248,27 +248,13 @@ mod child_processes {
         );
         let cancelled = Arc::new(AtomicBool::new(false));
         let trigger = cancelled.clone();
-        let callback_ran = Arc::new(AtomicBool::new(false));
-        let callback_ran_for_trigger = callback_ran.clone();
-        let pid_for_trigger = pid.clone();
-        tokio::spawn(async move {
-            for _ in 0..500 {
-                if callback_ran_for_trigger.load(std::sync::atomic::Ordering::Acquire)
-                    && pid_for_trigger.exists()
-                {
-                    trigger.store(true, std::sync::atomic::Ordering::Release);
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        });
 
         let result = FfmpegPreview::new(fake)
             .stream_with(
                 Path::new("input.webm"),
                 cancelled,
                 Duration::from_secs(10),
-                move |_| callback_ran.store(true, std::sync::atomic::Ordering::Release),
+                move |_| trigger.store(true, std::sync::atomic::Ordering::Release),
             )
             .await;
 
