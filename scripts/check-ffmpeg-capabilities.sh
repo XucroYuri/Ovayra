@@ -14,8 +14,8 @@ case "$target_id" in
   macos-arm64-vt)
     require videotoolbox "$hwaccels"; require h264_videotoolbox "$encoders"; require hevc_videotoolbox "$encoders"; require aac_at "$encoders" ;;
   windows-x64-mf)
-    require d3d11va "$hwaccels"; require dxva2 "$hwaccels"; require h264_mf "$codec_inventory"; require cuda "$hwaccels"; require h264_nvenc "$encoders"; require hevc_nvenc "$encoders"; require h264_cuvid "$decoders"; require hevc_cuvid "$decoders" ;;
+    require d3d11va "$hwaccels"; require dxva2 "$hwaccels"; require h264_mf "$codec_inventory"; require cuda "$hwaccels"; require h264_nvenc "$encoders"; require hevc_nvenc "$encoders"; require h264 "$decoders"; require hevc "$decoders" ;;
   linux-x64-vaapi-wayland)
-    require vaapi "$hwaccels"; require scale_vaapi "$filters"; require cuda "$hwaccels"; require h264_nvenc "$encoders"; require hevc_nvenc "$encoders"; require h264_cuvid "$decoders"; require hevc_cuvid "$decoders" ;;
+    require vaapi "$hwaccels"; require scale_vaapi "$filters"; require cuda "$hwaccels"; require h264_nvenc "$encoders"; require hevc_nvenc "$encoders"; require h264 "$decoders"; require hevc "$decoders" ;;
   *) echo "unsupported target: $target_id" >&2; exit 64 ;;
 esac

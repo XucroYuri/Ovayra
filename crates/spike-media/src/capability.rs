@@ -489,10 +489,10 @@ impl HardwarePlan {
             Backend::NvencNvdec => vec![
                 "-hwaccel",
                 "cuda",
+                "-hwaccel_output_format",
+                "cuda",
                 "-i",
                 "synthetic-h264-aac.mp4",
-                "-vf",
-                "scale_cuda=1280:720",
                 "-c:v",
                 "h264_nvenc",
                 "-c:a",
@@ -683,9 +683,8 @@ impl HardwarePlan {
             ],
             Backend::NvencNvdec => &[
                 (InventoryKind::Hwaccel, "cuda"),
-                (InventoryKind::Decoder, "h264_cuvid"),
+                (InventoryKind::Decoder, "h264"),
                 (InventoryKind::Encoder, "h264_nvenc"),
-                (InventoryKind::Filter, "scale_cuda"),
             ],
             Backend::Vaapi => &[
                 (InventoryKind::Hwaccel, "vaapi"),

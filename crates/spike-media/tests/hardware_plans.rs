@@ -8,12 +8,12 @@ fn complete_inventory() -> Inventory {
             InventoryCommand::Hwaccels,
             "vaapi cuda videotoolbox d3d11va",
         ),
-        InventoryOutput::success(InventoryCommand::Decoders, "h264 h264_cuvid"),
+        InventoryOutput::success(InventoryCommand::Decoders, "h264"),
         InventoryOutput::success(
             InventoryCommand::Encoders,
             "h264_vaapi h264_nvenc h264_videotoolbox h264_mf",
         ),
-        InventoryOutput::success(InventoryCommand::Filters, "scale scale_vaapi scale_cuda"),
+        InventoryOutput::success(InventoryCommand::Filters, "scale scale_vaapi"),
     ])
     .unwrap()
 }
@@ -94,6 +94,20 @@ fn vaapi_plan_keeps_frames_on_the_hardware_surface() {
             .windows(2)
             .any(|w| w == ["-vaapi_device", "/dev/dri/renderD128"])
     );
+}
+
+#[test]
+fn nvdec_plan_keeps_frames_on_cuda_surfaces_without_an_unbuilt_scale_filter() {
+    let plan = HardwarePlan::self_test(Backend::NvencNvdec);
+    assert!(plan.args().windows(2).any(|w| w == ["-hwaccel", "cuda"]));
+    assert!(
+        plan.args()
+            .windows(2)
+            .any(|w| w == ["-hwaccel_output_format", "cuda"])
+    );
+    assert!(plan.args().windows(2).any(|w| w == ["-c:v", "h264_nvenc"]));
+    assert!(!plan.args().contains(&"-vf"));
+    assert!(plan.is_available(&complete_inventory(), true, 1));
 }
 
 #[test]
@@ -283,7 +297,7 @@ fn availability_rejects_missing_required_inventory_components() {
         InventoryOutput::success(InventoryCommand::Version, "version"),
         InventoryOutput::success(InventoryCommand::Buildconf, "buildconf"),
         InventoryOutput::success(InventoryCommand::Hwaccels, "cuda"),
-        InventoryOutput::success(InventoryCommand::Decoders, "h264_cuvid"),
+        InventoryOutput::success(InventoryCommand::Decoders, "h264"),
         InventoryOutput::success(InventoryCommand::Encoders, "h264_nvenc"),
     ]);
     assert!(inventory.is_err());
