@@ -32,6 +32,7 @@ for script in scripts/build-ffmpeg-linux.sh scripts/build-ffmpeg-macos.sh; do
 done
 rg -F --quiet -- 'system_pkg_config_dirs=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig' scripts/build-ffmpeg-linux.sh
 rg -F --quiet -- 'PKG_CONFIG_LIBDIR="$pkg_config_dir:$system_pkg_config_dirs"' scripts/build-ffmpeg-linux.sh
+rg -F --quiet -- 'export SOURCE_DATE_EPOCH ZERO_AR_DATE=1' scripts/build-ffmpeg-macos.sh
 for script in scripts/build-ffmpeg-linux.sh scripts/build-ffmpeg-macos.sh scripts/build-ffmpeg-windows-msys.sh; do
   rg -F --quiet '{ printf '\''configuration: '\''' "$script"
   rg -F --quiet '} > "$stage_root/provenance/buildconf.txt"' "$script"

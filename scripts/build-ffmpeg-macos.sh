@@ -19,7 +19,7 @@ target_triple=macos-arm64-vt
 marker="$stage_root/.ovayra-target"
 if [[ -e "$stage_root" && (! -f "$marker" || "$(<"$marker")" != "$target_triple") ]]; then echo "refusing cross-target stage overwrite" >&2; exit 65; fi
 mkdir -p "$stage_root" "$stage_root/provenance" "$stage_root/LICENSES" "$stage_root/sbom"
-export SOURCE_DATE_EPOCH CFLAGS="${CFLAGS:-} -fdebug-prefix-map=$source_root=/usr/src/ovayra" LDFLAGS="${LDFLAGS:-}"
+export SOURCE_DATE_EPOCH ZERO_AR_DATE=1 CFLAGS="${CFLAGS:-} -fdebug-prefix-map=$source_root=/usr/src/ovayra" LDFLAGS="${LDFLAGS:-}"
 cmake_cmd=$(command -v cmake || true)
 [[ -x "$cmake_cmd" ]] || { echo 'CMake is required for the pinned Opus Git source' >&2; exit 65; }
 diff -ruN "$source_root/ffmpeg.pristine" "$source_root/ffmpeg" > "$stage_root/provenance/changes.diff" || [[ $? -eq 1 ]]
