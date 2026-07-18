@@ -2,7 +2,8 @@
 # This script deliberately runs in MSYS2 only as a POSIX build shell. cl/link/lib remain MSVC.
 set -euo pipefail
 # MSYS2 supplies the POSIX tools, while compiler selection below remains MSVC.
-[[ -d /ucrt64/bin ]] && PATH="/ucrt64/bin:$PATH"
+# Keep /usr/bin first so recursive GNU make understands MSYS paths such as /d/.
+[[ -d /ucrt64/bin ]] && PATH="/usr/bin:/ucrt64/bin:$PATH"
 source_root= dependency_prefix= stage_root= parallelism=
 while [[ $# -gt 0 ]]; do case "$1" in
   --source-root) source_root=$2; shift 2;; --dependency-prefix) dependency_prefix=$2; shift 2;;
@@ -16,6 +17,7 @@ msvc_bin=$(cygpath -u "$OVAYRA_MSVC_BIN")
 PATH="$msvc_bin:$PATH"
 hash -r
 for tool in cl link lib nasm perl make cmake ninja cygpath sha256sum diff; do command -v "$tool" >/dev/null || { echo "required Windows build tool missing: $tool" >&2; exit 65; }; done
+[[ "$(command -v make)" == /usr/bin/make || "$(command -v make)" == /usr/bin/make.exe ]] || { echo 'MSYS GNU make must drive Visual Studio project generation' >&2; exit 65; }
 for tool in cl link lib; do
   resolved=$(command -v "$tool")
   [[ "$resolved" == "$msvc_bin/$tool" || "$resolved" == "$msvc_bin/$tool.exe" ]] || { echo "MSYS2 resolved a non-MSVC $tool executable" >&2; exit 65; }
