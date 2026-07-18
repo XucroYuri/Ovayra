@@ -3,7 +3,7 @@
 version = "8.1.2"
 source_url = "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz"
 signature_url = "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz.asc"
-sha256 = "8c56e9c1a92e833d00caf16975ae6b67c571a1f6949321262ef3d425d816d2a8"
+sha256 = "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c"
 release_key_fingerprint = "FCF986EA15E6E293A5644F10B4322F04D67658D8"
 release_tag = "n8.1.2"
 release_commit = "38b88335f99e76ed89ff3c93f877fdefce736c13"

@@ -74,7 +74,7 @@ jobs:
           curl --fail --location --proto '=https' --tlsv1.2 -o target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc "$FFMPEG_ASC_URL"
           curl --fail --location --proto '=https' --tlsv1.2 -o target/ffmpeg-source/ffmpeg-devel.asc "$FFMPEG_KEY_URL"
           bash scripts/verify-ffmpeg-signature.sh --key target/ffmpeg-source/ffmpeg-devel.asc --tar target/ffmpeg-source/ffmpeg-8.1.2.tar.xz --signature target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc --fingerprint FCF986EA15E6E293A5644F10B4322F04D67658D8 --attestation target/ffmpeg-source/ffmpeg-signature-attestation.json
-          test "$(shasum -a 256 target/ffmpeg-source/ffmpeg-8.1.2.tar.xz | awk '{print $1}')" = 8c56e9c1a92e833d00caf16975ae6b67c571a1f6949321262ef3d425d816d2a8
+          test "$(shasum -a 256 target/ffmpeg-source/ffmpeg-8.1.2.tar.xz | awk '{print $1}')" = 464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c
           git clone --depth 1 --branch v1.16.0 "$LIBVPX_REPOSITORY" target/ffmpeg-source/libvpx
           test "$(git -C target/ffmpeg-source/libvpx rev-parse HEAD)" = 1024874c5919305883187e2953de8fcb4c3d7fa6
           git clone --depth 1 --branch v1.6.1 "$OPUS_REPOSITORY" target/ffmpeg-source/opus
@@ -102,7 +102,7 @@ jobs:
           Invoke-WebRequest -Uri $env:FFMPEG_KEY_URL -OutFile target/ffmpeg-source/ffmpeg-devel.asc
           & 'C:\msys64\usr\bin\bash.exe' scripts/verify-ffmpeg-signature.sh --key target/ffmpeg-source/ffmpeg-devel.asc --tar target/ffmpeg-source/ffmpeg-8.1.2.tar.xz --signature target/ffmpeg-source/ffmpeg-8.1.2.tar.xz.asc --fingerprint FCF986EA15E6E293A5644F10B4322F04D67658D8 --attestation target/ffmpeg-source/ffmpeg-signature-attestation.json
           if ($LASTEXITCODE -ne 0) { throw 'FFmpeg signature helper failed' }
-          if ((Get-FileHash target/ffmpeg-source/ffmpeg-8.1.2.tar.xz -Algorithm SHA256).Hash.ToLower() -ne '8c56e9c1a92e833d00caf16975ae6b67c571a1f6949321262ef3d425d816d2a8') { throw 'FFmpeg hash mismatch' }
+          if ((Get-FileHash target/ffmpeg-source/ffmpeg-8.1.2.tar.xz -Algorithm SHA256).Hash.ToLower() -ne '464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c') { throw 'FFmpeg hash mismatch' }
           git clone --depth 1 --branch v1.16.0 $env:LIBVPX_REPOSITORY target/ffmpeg-source/libvpx
           if ((git -C target/ffmpeg-source/libvpx rev-parse HEAD) -ne '1024874c5919305883187e2953de8fcb4c3d7fa6') { throw 'libvpx tag mismatch' }
           git clone --depth 1 --branch v1.6.1 $env:OPUS_REPOSITORY target/ffmpeg-source/opus
