@@ -7,7 +7,7 @@ require() { local name=$1 inventory=$2; grep -Fqx -- "$name" <<<"$inventory" >/d
 hwaccels=$("$ffmpeg" -hide_banner -hwaccels 2>&1 | awk 'seen { sub(/^[[:space:]]*/, ""); print } /Hardware acceleration methods:/ { seen = 1 }')
 decoders=$("$ffmpeg" -hide_banner -decoders 2>&1 | awk '$1 ~ /^[A-Z.][A-Z.][A-Z.][A-Z.][A-Z.][A-Z.]$/ {print $2}')
 encoders=$("$ffmpeg" -hide_banner -encoders 2>&1 | awk '$1 ~ /^[A-Z.][A-Z.][A-Z.][A-Z.][A-Z.][A-Z.]$/ {print $2}')
-filters=$("$ffmpeg" -hide_banner -filters 2>&1 | awk '$1 ~ /^[A-Z.][A-Z.][A-Z.]$/ {print $2}')
+filters=$("$ffmpeg" -hide_banner -filters 2>&1 | awk '$1 ~ /^[A-Z.][A-Z.]$/ {print $2}')
 codec_inventory=$(printf '%s\n%s\n' "$decoders" "$encoders")
 require vp9 "$decoders"; require libvpx-vp9 "$encoders"; require libopus "$encoders"
 case "$target_id" in
