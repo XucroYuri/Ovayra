@@ -28,7 +28,10 @@ mkdir -p "$dependency_prefix" "$stage_root"/{provenance,LICENSES,sbom}
 # Capture only intentional patch delta before configure or generated build files can pollute it.
 diff -ruN "$source_root/ffmpeg.pristine" "$source_root/ffmpeg" > "$stage_root/provenance/changes.diff" || [[ $? -eq 1 ]]
 cd "$source_root/libvpx"
-./configure --target=x86_64-win64-vs17 --prefix="$(cygpath -m "$dependency_prefix")" --disable-examples --disable-tools --enable-vp9-highbitdepth
+# libvpx's Visual Studio target is an external-build generator. Leaving CC set
+# makes its GNU-style probe pass `-o` flags directly to cl.exe before the
+# generated MSBuild project exists.
+env -u CC -u CXX -u AR -u LD ./configure --target=x86_64-win64-vs17 --prefix="$(cygpath -m "$dependency_prefix")" --disable-examples --disable-tools --enable-vp9-highbitdepth
 make -j"$parallelism"; make install
 cmake -S "$source_root/opus" -B "$source_root/opus-msvc" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$dependency_prefix")"
 cmake --build "$source_root/opus-msvc" --parallel "$parallelism"; cmake --install "$source_root/opus-msvc"
