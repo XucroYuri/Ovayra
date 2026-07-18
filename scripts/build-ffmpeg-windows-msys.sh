@@ -17,6 +17,8 @@ msvc_bin=$(cygpath -u "$OVAYRA_MSVC_BIN")
 PATH="$msvc_bin:$PATH"
 hash -r
 for tool in cl link lib nasm perl cygpath sha256sum diff; do command -v "$tool" >/dev/null || { echo "required Windows build tool missing: $tool" >&2; exit 65; }; done
+NASMENV= nasm --reproducible -v >/dev/null || { echo 'NASM must support reproducible COFF output' >&2; exit 65; }
+export NASMENV=--reproducible
 msys_bin=$(cygpath -u "$OVAYRA_MSYS_BIN")
 make_cmd="$msys_bin/make.exe"
 [[ -x "$make_cmd" ]] || { echo 'MSYS GNU make must drive Visual Studio project generation' >&2; exit 65; }

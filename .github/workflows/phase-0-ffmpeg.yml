@@ -172,6 +172,7 @@ jobs:
             Copy-Item "$stable/stage" "target/ffmpeg-$build-stage" -Recurse; Copy-Item "$stable/cpu-evidence.json" "target/ffmpeg-$build-cpu-evidence.json"
           }
           & $bash scripts/compare-ffmpeg-reproducibility.sh target/ffmpeg-a-stage target/ffmpeg-b-stage
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg bundle tree comparison failed' }
           cargo run --locked -p ovayra-spike -- release verify-ffmpeg-pair --bundle-a target/ffmpeg-a-stage --bundle-b target/ffmpeg-b-stage --evidence "docs/phase-0/evidence/ffmpeg-repro-$env:OVAYRA_TARGET_ID.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

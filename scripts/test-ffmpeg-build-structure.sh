@@ -6,7 +6,7 @@ windows_ps1="$root/scripts/build-ffmpeg-windows.ps1"
 windows_bash="$root/scripts/build-ffmpeg-windows-msys.sh"
 workflow="$root/.github/workflows/phase-0-ffmpeg.yml"
 for requirement in 'vswhere.exe' 'VsDevCmd.bat' 'cl.exe' 'link.exe' 'lib.exe' 'cmake.exe' 'ninja.exe' 'MSYS2_LOCATION' 'OVAYRA_MSVC_BIN' 'OVAYRA_MSYS_BIN' 'OVAYRA_NATIVE_CMAKE' 'OVAYRA_NATIVE_NINJA' 'Remove-Item -Path "Env:$name"'; do rg -F -- "$requirement" "$windows_ps1" >/dev/null; done
-for requirement in 'PATH="/usr/bin:/ucrt64/bin:$PATH"' 'OVAYRA_MSYS_BIN' 'OVAYRA_NATIVE_CMAKE' 'OVAYRA_NATIVE_NINJA' 'make_cmd="$msys_bin/make.exe"' '"$make_cmd" -j' 'MSYS GNU make' 'OVAYRA_MSVC_BIN' 'PATH="$msvc_bin:$PATH"' 'env -u CC -u CXX -u AR -u LD ./configure' '--target=x86_64-win64-vs17' 'vpxmd.lib' 'PKG_CONFIG_LIBDIR' 'tail -n 200 ffbuild/config.log' '"$cmake_cmd" -S' 'CMAKE_MAKE_PROGRAM="$ninja_win"' 'CMAKE_C_COMPILER=cl' 'CMAKE_CXX_COMPILER=cl' '--toolchain=msvc' '--ar="lib.exe -Brepro"' '--extra-ldflags="-Brepro ' '--extra-cflags="-MD -Brepro ' '--enable-ffnvcodec' '--enable-dxva2' 'changes.diff' '.ovayra-target'; do
+for requirement in 'PATH="/usr/bin:/ucrt64/bin:$PATH"' 'OVAYRA_MSYS_BIN' 'OVAYRA_NATIVE_CMAKE' 'OVAYRA_NATIVE_NINJA' 'make_cmd="$msys_bin/make.exe"' '"$make_cmd" -j' 'MSYS GNU make' 'OVAYRA_MSVC_BIN' 'PATH="$msvc_bin:$PATH"' 'env -u CC -u CXX -u AR -u LD ./configure' '--target=x86_64-win64-vs17' 'vpxmd.lib' 'PKG_CONFIG_LIBDIR' 'tail -n 200 ffbuild/config.log' '"$cmake_cmd" -S' 'CMAKE_MAKE_PROGRAM="$ninja_win"' 'CMAKE_C_COMPILER=cl' 'CMAKE_CXX_COMPILER=cl' '--toolchain=msvc' '--ar="lib.exe -Brepro"' '--extra-ldflags="-Brepro ' '--extra-cflags="-MD -Brepro ' 'nasm --reproducible -v' 'NASMENV=--reproducible' '--enable-ffnvcodec' '--enable-dxva2' 'changes.diff' '.ovayra-target'; do
   rg -F -- "$requirement" "$windows_bash" >/dev/null
 done
 rg -F -- '--enable-ffnvcodec' "$root/scripts/build-ffmpeg-linux.sh" >/dev/null
@@ -17,7 +17,7 @@ for script in "$root/scripts/build-ffmpeg-linux.sh" "$windows_bash"; do
   if rg -F -- 'nv-codec-headers/LICENSE' "$script"; then echo 'nv-codec-headers has no standalone LICENSE file at the pinned tag' >&2; exit 1; fi
 done
 if rg -F -- '--host=x86_64-w64-mingw32' "$windows_bash"; then echo 'MinGW Opus target is forbidden' >&2; exit 1; fi
-for requirement in 'id: msys2' 'steps.msys2.outputs.msys2-location' 'ffmpeg-stable' '$ErrorActionPreference = '\''Stop'\'''; do rg -F -- "$requirement" "$workflow" >/dev/null; done
+for requirement in 'id: msys2' 'steps.msys2.outputs.msys2-location' 'ffmpeg-stable' '$ErrorActionPreference = '\''Stop'\''' 'FFmpeg bundle tree comparison failed'; do rg -F -- "$requirement" "$workflow" >/dev/null; done
 rg -F -- 'libnuma-dev cmake' "$workflow" >/dev/null
 rg -F -- 'libfontconfig1-dev' "$workflow" >/dev/null
 rg -F -- 'libayatana-appindicator3-dev' "$workflow" >/dev/null
