@@ -56,18 +56,17 @@ fn rejects_duplicate_checksum_entries_and_unlisted_regular_files() {
     ));
 }
 
+#[cfg(unix)]
 #[test]
 fn rejects_an_executable_symlink_that_escapes_the_bundle() {
+    use std::os::unix::fs::symlink;
+
     let bundle = valid_layout();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::symlink;
-        let outside = tempfile::NamedTempFile::new().unwrap();
-        fs::remove_file(bundle.path().join("bin/ffmpeg")).unwrap();
-        symlink(outside.path(), bundle.path().join("bin/ffmpeg")).unwrap();
-        let error = FfmpegBundle::validate_layout(bundle.path()).unwrap_err();
-        assert!(matches!(error, FfmpegPolicyError::UnsafePath(_)));
-    }
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    fs::remove_file(bundle.path().join("bin/ffmpeg")).unwrap();
+    symlink(outside.path(), bundle.path().join("bin/ffmpeg")).unwrap();
+    let error = FfmpegBundle::validate_layout(bundle.path()).unwrap_err();
+    assert!(matches!(error, FfmpegPolicyError::UnsafePath(_)));
 }
 
 #[test]
