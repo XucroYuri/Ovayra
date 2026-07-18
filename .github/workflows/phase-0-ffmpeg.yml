@@ -62,7 +62,14 @@ jobs:
       - name: Install native build prerequisites (Linux)
         if: runner.os == 'Linux'
         shell: bash
-        run: sudo apt-get update && sudo apt-get install --yes build-essential pkg-config nasm yasm zstd libdrm-dev libva-dev libnuma-dev cmake
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential pkg-config clang lld nasm yasm zstd \
+            libdrm-dev libva-dev libnuma-dev cmake libfontconfig1-dev \
+            libxkbcommon-dev libwayland-dev libx11-dev libx11-xcb-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev \
+            libxcb-randr0-dev libxcb-icccm4-dev libdbus-1-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libayatana-appindicator3-dev
       - name: Install native build prerequisites (macOS)
         if: runner.os == 'macOS'
         shell: bash
