@@ -21,6 +21,7 @@ cmd.exe /d /s /c "`"$vsDevCmd`" -no_logo -arch=x64 -host_arch=x64 && set" | ForE
 foreach ($tool in 'cl.exe', 'link.exe', 'lib.exe') {
   if (!(Get-Command $tool -ErrorAction SilentlyContinue)) { throw "MSVC tool unavailable after VsDevCmd: $tool" }
 }
+$env:OVAYRA_MSVC_BIN = Split-Path -Parent (Get-Command cl.exe).Source
 $bash = 'C:\msys64\usr\bin\bash.exe'
 if (!(Test-Path -LiteralPath $bash)) { throw "MSYS2 bash missing: $bash" }
 foreach ($value in @($SourceRoot, $DependencyPrefix, $StageRoot)) {

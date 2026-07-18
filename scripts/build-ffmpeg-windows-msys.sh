@@ -8,8 +8,18 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --source-root) source_root=$2; shift 2;; --dependency-prefix) dependency_prefix=$2; shift 2;;
   --stage-root) stage_root=$2; shift 2;; --parallelism) parallelism=$2; shift 2;; *) exit 64;; esac; done
 [[ -n "$source_root" && -n "$dependency_prefix" && -n "$stage_root" && "$parallelism" =~ ^[1-9][0-9]*$ ]]
-[[ "${SOURCE_DATE_EPOCH:-}" == 1781663615 && "${CC:-}" == cl && "${CXX:-}" == cl && "${AR:-}" == lib && "${LD:-}" == link ]] || { echo 'locked epoch or MSVC tool environment missing' >&2; exit 65; }
+[[ "${SOURCE_DATE_EPOCH:-}" == 1781663615 && "${CC:-}" == cl && "${CXX:-}" == cl && "${AR:-}" == lib && "${LD:-}" == link && -n "${OVAYRA_MSVC_BIN:-}" ]] || { echo 'locked epoch or MSVC tool environment missing' >&2; exit 65; }
+msvc_bin=$(cygpath -u "$OVAYRA_MSVC_BIN")
+[[ -d "$msvc_bin" ]] || { echo 'MSVC binary directory is unavailable to MSYS2' >&2; exit 65; }
+# MSYS2 also ships /usr/bin/link.exe. Keep the Visual Studio directory first so
+# libvpx and FFmpeg invoke the MSVC linker selected by VsDevCmd.
+PATH="$msvc_bin:$PATH"
+hash -r
 for tool in cl link lib nasm perl make cmake ninja cygpath sha256sum diff; do command -v "$tool" >/dev/null || { echo "required Windows build tool missing: $tool" >&2; exit 65; }; done
+for tool in cl link lib; do
+  resolved=$(command -v "$tool")
+  [[ "$resolved" == "$msvc_bin/$tool" || "$resolved" == "$msvc_bin/$tool.exe" ]] || { echo "MSYS2 resolved a non-MSVC $tool executable" >&2; exit 65; }
+done
 source_root=$(cygpath -u "$source_root"); dependency_prefix=$(cygpath -u "$dependency_prefix"); stage_root=$(cygpath -u "$stage_root")
 target_id=windows-x64-mf
 marker="$stage_root/.ovayra-target"
