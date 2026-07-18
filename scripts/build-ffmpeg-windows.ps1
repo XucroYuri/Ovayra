@@ -36,6 +36,8 @@ foreach ($value in @($SourceRoot, $DependencyPrefix, $StageRoot)) {
   if ([string]::IsNullOrWhiteSpace($value) -or $value.Contains("`n") -or $value.Contains("`r")) { throw 'build paths must be nonempty and newline-free' }
 }
 $script = Join-Path $PSScriptRoot 'build-ffmpeg-windows-msys.sh'
-$env:CC = 'cl'; $env:CXX = 'cl'; $env:AR = 'lib'; $env:LD = 'link'
+foreach ($name in 'CC', 'CXX', 'AR', 'LD') {
+  Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+}
 & $bash --noprofile --norc $script --source-root $SourceRoot --dependency-prefix $DependencyPrefix --stage-root $StageRoot --parallelism $Parallelism
 if ($LASTEXITCODE -ne 0) { throw "MSYS2/MSVC FFmpeg build failed with exit code $LASTEXITCODE" }

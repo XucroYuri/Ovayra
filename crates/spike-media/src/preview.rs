@@ -24,6 +24,8 @@ pub const PREVIEW_HEIGHT: usize = 360;
 /// The exact number of bytes in one preview frame.
 pub const PREVIEW_FRAME_BYTES: usize = PREVIEW_WIDTH * PREVIEW_HEIGHT * 4;
 const STDERR_RETAIN_LIMIT: usize = 64 * 1024;
+const EXECUTABLE_BUSY_RETRIES: u8 = 10;
+const EXECUTABLE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// A validated RGBA frame, stamped when it enters the preview bridge.
 #[derive(Debug)]
@@ -256,14 +258,14 @@ impl FfmpegPreview {
     where
         F: FnMut(Frame) + Send,
     {
-        let mut child = Command::new(&self.executable)
+        let mut command = Command::new(&self.executable);
+        command
             .args(self.arguments(input))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(PreviewError::Spawn)?;
+            .kill_on_drop(true);
+        let mut child = spawn_preview_process(&mut command).await?;
         let Some(stdout) = child.stdout.take() else {
             terminate_and_reap(&mut child).await;
             return Err(PreviewError::MissingOutputPipe);
@@ -297,6 +299,23 @@ impl FfmpegPreview {
             frames_read,
             stderr_bytes,
         })
+    }
+}
+
+async fn spawn_preview_process(command: &mut Command) -> Result<Child, PreviewError> {
+    let mut retries = 0_u8;
+    loop {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && retries < EXECUTABLE_BUSY_RETRIES =>
+            {
+                retries += 1;
+                tokio::time::sleep(EXECUTABLE_BUSY_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(PreviewError::Spawn(error)),
+        }
     }
 }
 

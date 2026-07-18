@@ -9,7 +9,7 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --source-root) source_root=$2; shift 2;; --dependency-prefix) dependency_prefix=$2; shift 2;;
   --stage-root) stage_root=$2; shift 2;; --parallelism) parallelism=$2; shift 2;; *) exit 64;; esac; done
 [[ -n "$source_root" && -n "$dependency_prefix" && -n "$stage_root" && "$parallelism" =~ ^[1-9][0-9]*$ ]]
-[[ "${SOURCE_DATE_EPOCH:-}" == 1781663615 && "${CC:-}" == cl && "${CXX:-}" == cl && "${AR:-}" == lib && "${LD:-}" == link && -n "${OVAYRA_MSVC_BIN:-}" && -n "${OVAYRA_MSYS_BIN:-}" && -n "${OVAYRA_NATIVE_CMAKE:-}" && -n "${OVAYRA_NATIVE_NINJA:-}" ]] || { echo 'locked epoch or Windows tool environment missing' >&2; exit 65; }
+[[ "${SOURCE_DATE_EPOCH:-}" == 1781663615 && -z "${CC:-}${CXX:-}${AR:-}${LD:-}" && -n "${OVAYRA_MSVC_BIN:-}" && -n "${OVAYRA_MSYS_BIN:-}" && -n "${OVAYRA_NATIVE_CMAKE:-}" && -n "${OVAYRA_NATIVE_NINJA:-}" ]] || { echo 'locked epoch or Windows tool environment missing' >&2; exit 65; }
 msvc_bin=$(cygpath -u "$OVAYRA_MSVC_BIN")
 [[ -d "$msvc_bin" ]] || { echo 'MSVC binary directory is unavailable to MSYS2' >&2; exit 65; }
 # MSYS2 also ships /usr/bin/link.exe. Keep the Visual Studio directory first so
@@ -40,6 +40,8 @@ cd "$source_root/libvpx"
 # generated MSBuild project exists.
 env -u CC -u CXX -u AR -u LD ./configure --target=x86_64-win64-vs17 --prefix="$(cygpath -m "$dependency_prefix")" --disable-examples --disable-tools --enable-vp9-highbitdepth
 "$make_cmd" -j"$parallelism"; "$make_cmd" install
+test -f "$dependency_prefix/lib/x64/vpxmd.lib"
+cp "$dependency_prefix/lib/x64/vpxmd.lib" "$dependency_prefix/lib/vpx.lib"
 opus_source_win=$(cygpath -m "$source_root/opus"); opus_build_win=$(cygpath -m "$source_root/opus-msvc")
 "$cmake_cmd" -S "$opus_source_win" -B "$opus_build_win" -G Ninja -DCMAKE_MAKE_PROGRAM="$ninja_win" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$dependency_prefix")"
 "$cmake_cmd" --build "$opus_build_win" --parallel "$parallelism"; "$cmake_cmd" --install "$opus_build_win"
@@ -49,7 +51,13 @@ test -f "$dependency_prefix/include/ffnvcodec/nvEncodeAPI.h"
 cd "$source_root/ffmpeg"
 prefix_win=$(cygpath -m "$dependency_prefix")
 configure=(--prefix="$(cygpath -m "$stage_root")" --toolchain=msvc --target-os=win32 --arch=x86_64 --disable-autodetect --disable-debug --disable-doc --disable-ffplay --disable-network --enable-ffmpeg --enable-ffprobe --enable-libopus --enable-libvpx --enable-version3 --disable-gpl --disable-nonfree --enable-d3d11va --enable-dxva2 --enable-mediafoundation --enable-nvenc --enable-nvdec --extra-cflags="-I$prefix_win/include" --extra-ldflags="-LIBPATH:$prefix_win/lib" --extra-libs="opus.lib vpx.lib")
-./configure "${configure[@]}"; "$make_cmd" -j"$parallelism"; fate_targets=$("$make_cmd" fate-list | grep -E '^fate-(lavf-matroska|vp9|opus)' | head -n 3 || true); [[ -n "$fate_targets" ]] || exit 66; set -- $fate_targets; "$make_cmd" "$@"; "$make_cmd" install
+export PKG_CONFIG_PATH="$dependency_prefix/lib/pkgconfig"
+export PKG_CONFIG_LIBDIR="$PKG_CONFIG_PATH"
+if ! ./configure "${configure[@]}"; then
+  tail -n 200 ffbuild/config.log >&2 || true
+  exit 1
+fi
+"$make_cmd" -j"$parallelism"; fate_targets=$("$make_cmd" fate-list | grep -E '^fate-(lavf-matroska|vp9|opus)' | head -n 3 || true); [[ -n "$fate_targets" ]] || exit 66; set -- $fate_targets; "$make_cmd" "$@"; "$make_cmd" install
 test -f "$stage_root/bin/ffmpeg.exe" && test -f "$stage_root/bin/ffprobe.exe"
 { printf 'configuration: '; printf '%q ' "${configure[@]}"; printf '\n'; } > "$stage_root/provenance/buildconf.txt"
 cp "$source_root"/{ffmpeg-8.1.2.tar.xz,ffmpeg-8.1.2.tar.xz.asc,libvpx-source.tar.zst,opus-source.tar.zst,nv-codec-headers-source.tar.zst,ffmpeg-signature-attestation.json} "$stage_root/provenance/"
