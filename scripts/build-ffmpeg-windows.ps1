@@ -22,6 +22,11 @@ foreach ($tool in 'cl.exe', 'link.exe', 'lib.exe') {
   if (!(Get-Command $tool -ErrorAction SilentlyContinue)) { throw "MSVC tool unavailable after VsDevCmd: $tool" }
 }
 $env:OVAYRA_MSVC_BIN = Split-Path -Parent (Get-Command cl.exe).Source
+foreach ($tool in 'cmake.exe', 'ninja.exe') {
+  if (!(Get-Command $tool -ErrorAction SilentlyContinue)) { throw "native Windows build tool unavailable: $tool" }
+}
+$env:OVAYRA_NATIVE_CMAKE = (Get-Command cmake.exe).Source
+$env:OVAYRA_NATIVE_NINJA = (Get-Command ninja.exe).Source
 $msys2Location = $env:MSYS2_LOCATION
 if ([string]::IsNullOrWhiteSpace($msys2Location)) { throw 'MSYS2_LOCATION is missing' }
 $bash = Join-Path $msys2Location 'usr\bin\bash.exe'

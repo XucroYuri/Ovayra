@@ -9,17 +9,20 @@ while [[ $# -gt 0 ]]; do case "$1" in
   --source-root) source_root=$2; shift 2;; --dependency-prefix) dependency_prefix=$2; shift 2;;
   --stage-root) stage_root=$2; shift 2;; --parallelism) parallelism=$2; shift 2;; *) exit 64;; esac; done
 [[ -n "$source_root" && -n "$dependency_prefix" && -n "$stage_root" && "$parallelism" =~ ^[1-9][0-9]*$ ]]
-[[ "${SOURCE_DATE_EPOCH:-}" == 1781663615 && "${CC:-}" == cl && "${CXX:-}" == cl && "${AR:-}" == lib && "${LD:-}" == link && -n "${OVAYRA_MSVC_BIN:-}" && -n "${OVAYRA_MSYS_BIN:-}" ]] || { echo 'locked epoch or Windows tool environment missing' >&2; exit 65; }
+[[ "${SOURCE_DATE_EPOCH:-}" == 1781663615 && "${CC:-}" == cl && "${CXX:-}" == cl && "${AR:-}" == lib && "${LD:-}" == link && -n "${OVAYRA_MSVC_BIN:-}" && -n "${OVAYRA_MSYS_BIN:-}" && -n "${OVAYRA_NATIVE_CMAKE:-}" && -n "${OVAYRA_NATIVE_NINJA:-}" ]] || { echo 'locked epoch or Windows tool environment missing' >&2; exit 65; }
 msvc_bin=$(cygpath -u "$OVAYRA_MSVC_BIN")
 [[ -d "$msvc_bin" ]] || { echo 'MSVC binary directory is unavailable to MSYS2' >&2; exit 65; }
 # MSYS2 also ships /usr/bin/link.exe. Keep the Visual Studio directory first so
 # libvpx and FFmpeg invoke the MSVC linker selected by VsDevCmd.
 PATH="$msvc_bin:$PATH"
 hash -r
-for tool in cl link lib nasm perl cmake ninja cygpath sha256sum diff; do command -v "$tool" >/dev/null || { echo "required Windows build tool missing: $tool" >&2; exit 65; }; done
+for tool in cl link lib nasm perl cygpath sha256sum diff; do command -v "$tool" >/dev/null || { echo "required Windows build tool missing: $tool" >&2; exit 65; }; done
 msys_bin=$(cygpath -u "$OVAYRA_MSYS_BIN")
 make_cmd="$msys_bin/make.exe"
 [[ -x "$make_cmd" ]] || { echo 'MSYS GNU make must drive Visual Studio project generation' >&2; exit 65; }
+cmake_cmd=$(cygpath -u "$OVAYRA_NATIVE_CMAKE")
+ninja_win=$(cygpath -m "$OVAYRA_NATIVE_NINJA")
+[[ -x "$cmake_cmd" ]] || { echo 'native Windows CMake is unavailable to MSYS2' >&2; exit 65; }
 for tool in cl link lib; do
   resolved=$(command -v "$tool")
   [[ "$resolved" == "$msvc_bin/$tool" || "$resolved" == "$msvc_bin/$tool.exe" ]] || { echo "MSYS2 resolved a non-MSVC $tool executable" >&2; exit 65; }
@@ -37,8 +40,9 @@ cd "$source_root/libvpx"
 # generated MSBuild project exists.
 env -u CC -u CXX -u AR -u LD ./configure --target=x86_64-win64-vs17 --prefix="$(cygpath -m "$dependency_prefix")" --disable-examples --disable-tools --enable-vp9-highbitdepth
 "$make_cmd" -j"$parallelism"; "$make_cmd" install
-cmake -S "$source_root/opus" -B "$source_root/opus-msvc" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$dependency_prefix")"
-cmake --build "$source_root/opus-msvc" --parallel "$parallelism"; cmake --install "$source_root/opus-msvc"
+opus_source_win=$(cygpath -m "$source_root/opus"); opus_build_win=$(cygpath -m "$source_root/opus-msvc")
+"$cmake_cmd" -S "$opus_source_win" -B "$opus_build_win" -G Ninja -DCMAKE_MAKE_PROGRAM="$ninja_win" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_INSTALL_PREFIX="$(cygpath -m "$dependency_prefix")"
+"$cmake_cmd" --build "$opus_build_win" --parallel "$parallelism"; "$cmake_cmd" --install "$opus_build_win"
 test -f "$dependency_prefix/include/opus/opus.h"
 cd "$source_root/nv-codec-headers"; "$make_cmd" PREFIX="$(cygpath -m "$dependency_prefix")" install
 test -f "$dependency_prefix/include/ffnvcodec/nvEncodeAPI.h"
