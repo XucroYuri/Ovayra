@@ -10,6 +10,7 @@ done
 
 rg -F --quiet 'release verify-ffmpeg-pair' .github/workflows/phase-0-ffmpeg.yml
 rg -F --quiet 'ffmpeg-repro-' .github/workflows/phase-0-ffmpeg.yml
+rg -F --quiet 'libdrm2 libva2 libva-drm2' .github/workflows/phase-0-ci.yml
 rg -F --quiet 'release prove-package' .github/workflows/phase-0-release.yml
 rg -F --quiet 'release prove-update' .github/workflows/phase-0-release.yml
 rg -F --quiet 'gemini-3.1-flash-lite' .github/workflows/phase-0-device.yml
