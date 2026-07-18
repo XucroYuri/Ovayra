@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
-    process::Command,
+    process::{Child, Command},
 };
 
 use crate::capability::{Inventory, InventoryCommand, InventoryError, InventoryOutput};
@@ -19,6 +19,8 @@ pub const COMMON_ARGS: &[&str] = &[
 ];
 const STDERR_LIMIT: usize = 1024 * 1024;
 const INVENTORY_STDOUT_LIMIT: usize = 64 * 1024;
+const EXECUTABLE_BUSY_RETRIES: u8 = 10;
+const EXECUTABLE_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Minimal evidence retained from a child invocation. It intentionally holds no command or path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,15 +96,15 @@ impl FfmpegRunner {
         args: Vec<OsString>,
         timeout: Duration,
     ) -> Result<(Vec<u8>, FfmpegEvidence), FfmpegError> {
-        let mut child = Command::new(&self.executable)
+        let mut command = Command::new(&self.executable);
+        command
             .args(COMMON_ARGS)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(FfmpegError::Spawn)?;
+            .kill_on_drop(true);
+        let mut child = spawn_ffmpeg_process(&mut command).await?;
         let Some(stdout) = child.stdout.take() else {
             terminate_and_reap(&mut child).await;
             return Err(FfmpegError::MissingOutputPipe);
@@ -163,14 +165,14 @@ impl FfmpegRunner {
     }
 
     async fn run_inventory(&self, args: &[&str]) -> Result<(Vec<u8>, FfmpegEvidence), FfmpegError> {
-        let mut child = Command::new(&self.executable)
+        let mut command = Command::new(&self.executable);
+        command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(FfmpegError::Spawn)?;
+            .kill_on_drop(true);
+        let mut child = spawn_ffmpeg_process(&mut command).await?;
         let Some(stdout) = child.stdout.take() else {
             terminate_and_reap(&mut child).await;
             return Err(FfmpegError::MissingOutputPipe);
@@ -214,6 +216,23 @@ impl FfmpegRunner {
                 stderr_sha256,
             },
         ))
+    }
+}
+
+async fn spawn_ffmpeg_process(command: &mut Command) -> Result<Child, FfmpegError> {
+    let mut retries = 0_u8;
+    loop {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && retries < EXECUTABLE_BUSY_RETRIES =>
+            {
+                retries += 1;
+                tokio::time::sleep(EXECUTABLE_BUSY_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(FfmpegError::Spawn(error)),
+        }
     }
 }
 
@@ -418,6 +437,31 @@ mod tests {
                 1
             );
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn runner_retries_a_transient_executable_text_busy_error() {
+        use std::{fs, time::Duration};
+
+        let log_directory = tempfile::tempdir().unwrap();
+        let log = log_directory.path().join("arguments.log");
+        let (_script_directory, executable) = script(&log, false);
+        let writer = fs::OpenOptions::new()
+            .write(true)
+            .open(&executable)
+            .unwrap();
+        let release_writer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            drop(writer);
+        });
+
+        let runner = super::FfmpegRunner::new(executable);
+        let (stdout, evidence) = runner.run(&["--transient-busy"]).await.unwrap();
+        release_writer.await.unwrap();
+
+        assert_eq!(stdout, b"stdout:--transient-busy\n");
+        assert_eq!(evidence.exit_code, Some(0));
     }
 
     #[cfg(unix)]
