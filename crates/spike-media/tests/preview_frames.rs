@@ -208,7 +208,7 @@ mod child_processes {
         let fake = fake_executable(
             dir.path(),
             "hang",
-            &format!("echo $$ > '{}'\nprintf x\nexec sleep 5", pid.display()),
+            &format!("echo $$ > '{}'\nprintf x\nexec sleep 30", pid.display()),
         );
         let started = Instant::now();
         let result = FfmpegPreview::new(fake)
