@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{fmt::Write as _, fs, path::Path};
 
 use spike_release::{FfmpegBundle, FfmpegPolicyError};
 
@@ -54,6 +54,32 @@ fn rejects_duplicate_checksum_entries_and_unlisted_regular_files() {
         error,
         FfmpegPolicyError::InvalidChecksumManifest(_)
     ));
+}
+
+#[test]
+fn accepts_additional_installed_files_only_when_the_manifest_covers_them() {
+    let bundle = valid_layout();
+    let relative = "include/libavcodec/avcodec.h";
+    write_file(bundle.path(), relative, "installed header");
+
+    let error =
+        FfmpegBundle::validate_layout_with_lock(bundle.path(), &trusted_lock(bundle.path()))
+            .unwrap_err();
+    assert!(matches!(
+        error,
+        FfmpegPolicyError::InvalidChecksumManifest(message)
+            if message == format!("missing {relative}")
+    ));
+
+    let mut manifest = fs::read_to_string(bundle.path().join("provenance/SHA256SUMS")).unwrap();
+    writeln!(
+        manifest,
+        "{}  {relative}",
+        sha256(bundle.path().join(relative))
+    )
+    .unwrap();
+    fs::write(bundle.path().join("provenance/SHA256SUMS"), manifest).unwrap();
+    FfmpegBundle::validate_layout_with_lock(bundle.path(), &trusted_lock(bundle.path())).unwrap();
 }
 
 #[cfg(unix)]

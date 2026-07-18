@@ -1,4 +1,5 @@
-# Trust-anchor and detached-signature documents have byte-exact hashes.
+# Trust-anchor, source-policy, and detached-signature documents have byte-exact hashes.
 *.pub text eol=lf
 *.minisig text eol=lf
+packaging/ffmpeg.lock text eol=lf
 *.bin binary

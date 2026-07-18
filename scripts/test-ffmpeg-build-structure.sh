@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
+rg -F -- 'packaging/ffmpeg.lock text eol=lf' "$root/.gitattributes" >/dev/null
 windows_ps1="$root/scripts/build-ffmpeg-windows.ps1"
 windows_bash="$root/scripts/build-ffmpeg-windows-msys.sh"
 workflow="$root/.github/workflows/phase-0-ffmpeg.yml"
@@ -21,6 +22,7 @@ rg -F -- 'compare-ffmpeg-reproducibility.sh target/ffmpeg-a-stage target/ffmpeg-
 for script in scripts/build-ffmpeg-linux.sh scripts/build-ffmpeg-macos.sh scripts/build-ffmpeg-windows-msys.sh; do
   rg -F --quiet '{ printf '\''configuration: '\''' "$script"
   rg -F --quiet '} > "$stage_root/provenance/buildconf.txt"' "$script"
+  rg -F --quiet "sed 's# [* ]\\./#  #'" "$script"
   for fate_target in fate-lavf-mkv fate-filter-testsrc2-yuv420p fate-filter-aloop; do
     rg -F --quiet "$fate_target" "$script"
   done

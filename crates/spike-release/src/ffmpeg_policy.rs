@@ -105,8 +105,8 @@ impl FfmpegBundle {
             let path = root.join(artifact);
             require_regular(&root, &path, artifact)?;
         }
-        validate_no_symlink_or_unlisted_files(&root, &artifacts)?;
-        validate_checksums(&root, &artifacts)?;
+        let files = collect_bundle_files(&root)?;
+        validate_checksums(&root, &artifacts, &files)?;
         let lock = validate_locked_source(&root, trusted_lock)?;
         let buildconf = fs::read_to_string(root.join("provenance/buildconf.txt"))?;
         Self::validate_buildconf(&buildconf)?;
@@ -504,10 +504,7 @@ fn required_artifacts(root: &Path) -> Result<Vec<String>, FfmpegPolicyError> {
     Ok(artifacts)
 }
 
-fn validate_no_symlink_or_unlisted_files(
-    root: &Path,
-    required: &[String],
-) -> Result<(), FfmpegPolicyError> {
+fn collect_bundle_files(root: &Path) -> Result<BTreeSet<String>, FfmpegPolicyError> {
     let mut stack = vec![root.to_owned()];
     let mut files = BTreeSet::new();
     while let Some(directory) = stack.pop() {
@@ -532,18 +529,14 @@ fn validate_no_symlink_or_unlisted_files(
             }
         }
     }
-    let manifest = "provenance/SHA256SUMS";
-    for file in files.iter().filter(|file| file.as_str() != manifest) {
-        if !required.iter().any(|artifact| artifact == file) {
-            return Err(FfmpegPolicyError::InvalidChecksumManifest(format!(
-                "unlisted regular file {file}"
-            )));
-        }
-    }
-    Ok(())
+    Ok(files)
 }
 
-fn validate_checksums(root: &Path, required: &[String]) -> Result<(), FfmpegPolicyError> {
+fn validate_checksums(
+    root: &Path,
+    required: &[String],
+    files: &BTreeSet<String>,
+) -> Result<(), FfmpegPolicyError> {
     let manifest = fs::read_to_string(root.join("provenance/SHA256SUMS"))?;
     let mut sums = BTreeMap::new();
     for line in manifest.lines() {
@@ -573,12 +566,22 @@ fn validate_checksums(root: &Path, required: &[String]) -> Result<(), FfmpegPoli
         .iter()
         .filter(|path| path.as_str() != "provenance/SHA256SUMS")
     {
-        let expected = sums.remove(required.as_str()).ok_or_else(|| {
-            FfmpegPolicyError::InvalidChecksumManifest(format!("missing {required}"))
-        })?;
-        let actual = sha256_file(&root.join(required))?;
+        if !sums.contains_key(required.as_str()) {
+            return Err(FfmpegPolicyError::InvalidChecksumManifest(format!(
+                "missing {required}"
+            )));
+        }
+    }
+    for file in files
+        .iter()
+        .filter(|path| path.as_str() != "provenance/SHA256SUMS")
+    {
+        let expected = sums
+            .remove(file.as_str())
+            .ok_or_else(|| FfmpegPolicyError::InvalidChecksumManifest(format!("missing {file}")))?;
+        let actual = sha256_file(&root.join(file))?;
         if actual != expected {
-            return Err(FfmpegPolicyError::ChecksumMismatch(required.clone()));
+            return Err(FfmpegPolicyError::ChecksumMismatch(file.clone()));
         }
     }
     if let Some((unexpected, _)) = sums.into_iter().next() {
