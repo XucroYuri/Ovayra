@@ -142,13 +142,31 @@ impl FfmpegBundle {
     /// Returns an error for a malformed record, duplicate/forbidden token, or absent baseline
     /// policy token.
     pub fn validate_buildconf(buildconf: &str) -> Result<(), FfmpegPolicyError> {
-        let line = buildconf
-            .lines()
-            .find_map(|line| line.trim_start().strip_prefix("configuration:"))
-            .ok_or_else(|| {
-                FfmpegPolicyError::InvalidBuildconf("missing configuration record".into())
-            })?;
-        let tokens = parse_tokens(line.trim())?;
+        let mut lines = buildconf.lines();
+        let mut configuration = None;
+        while let Some(line) = lines.next() {
+            let Some(inline) = line.trim_start().strip_prefix("configuration:") else {
+                continue;
+            };
+            let mut record = inline.trim().to_owned();
+            for continuation in lines.by_ref() {
+                let continuation = continuation.trim();
+                if continuation.starts_with("--") {
+                    if !record.is_empty() {
+                        record.push(' ');
+                    }
+                    record.push_str(continuation);
+                } else if !continuation.is_empty() || !record.is_empty() {
+                    break;
+                }
+            }
+            configuration = Some(record);
+            break;
+        }
+        let configuration = configuration.ok_or_else(|| {
+            FfmpegPolicyError::InvalidBuildconf("missing configuration record".into())
+        })?;
+        let tokens = parse_tokens(&configuration)?;
         let values: BTreeSet<_> = tokens.iter().map(String::as_str).collect();
         if values.len() != tokens.len() {
             return Err(FfmpegPolicyError::InvalidBuildconf(

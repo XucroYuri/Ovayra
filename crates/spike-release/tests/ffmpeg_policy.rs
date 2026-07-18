@@ -33,6 +33,24 @@ fn rejects_duplicate_configure_tokens_to_prevent_ambiguous_effective_configurati
 }
 
 #[test]
+fn accepts_the_official_multiline_buildconf_format_and_rejects_an_empty_record() {
+    let multiline = format!(
+        "\n  configuration:\n    {}\n\nExiting with exit code 0\n",
+        BUILD_CONF
+            .trim_start_matches("configuration: ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("\n    ")
+    );
+    FfmpegBundle::validate_buildconf(&multiline).unwrap();
+
+    let error =
+        FfmpegBundle::validate_buildconf("\n  configuration:\n\nExiting with exit code 0\n")
+            .unwrap_err();
+    assert!(matches!(error, FfmpegPolicyError::InvalidBuildconf(_)));
+}
+
+#[test]
 fn requires_corresponding_source_and_release_material() {
     let bundle = tempfile::tempdir().unwrap();
     let error = FfmpegBundle::validate_layout(bundle.path()).unwrap_err();
