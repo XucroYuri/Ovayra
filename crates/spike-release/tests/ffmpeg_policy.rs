@@ -200,6 +200,16 @@ fn rejects_inexact_or_swapped_executable_version_banners() {
     assert!(matches!(error, FfmpegPolicyError::ExecutableCheck(_)));
 }
 
+#[cfg(unix)]
+#[test]
+fn accepts_official_release_version_banners_with_copyright_suffixes() {
+    let bundle = executable_layout(
+        "ffmpeg version 8.1.2 Copyright (c) 2000-2026 the FFmpeg developers",
+        "ffprobe version 8.1.2 Copyright (c) 2007-2026 the FFmpeg developers",
+    );
+    FfmpegBundle::validate_with_lock(bundle.path(), &trusted_lock(bundle.path())).unwrap();
+}
+
 #[test]
 fn rejects_regenerated_manifest_when_sbom_archive_hash_is_replaced() {
     let bundle = valid_layout();

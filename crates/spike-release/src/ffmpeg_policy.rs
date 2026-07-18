@@ -181,7 +181,19 @@ fn validate_executables(root: &Path) -> Result<(), FfmpegPolicyError> {
         let output = run_checked(&executable, "-version")?;
         let stdout = String::from_utf8_lossy(&output);
         let expected = format!("{program} version {FFMPEG_VERSION}");
-        if stdout.lines().next().map(str::trim_start) != Some(expected.as_str()) {
+        let suffix = stdout
+            .lines()
+            .next()
+            .map(str::trim_start)
+            .and_then(|line| line.strip_prefix(&expected));
+        let valid = match suffix {
+            Some("") => true,
+            Some(suffix) => {
+                suffix.starts_with(" Copyright (c) ") && suffix.ends_with(" the FFmpeg developers")
+            }
+            None => false,
+        };
+        if !valid {
             return Err(FfmpegPolicyError::ExecutableCheck(format!(
                 "{program} did not report exact source version {FFMPEG_VERSION}"
             )));
