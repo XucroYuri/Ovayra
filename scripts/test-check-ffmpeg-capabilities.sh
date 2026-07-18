@@ -5,9 +5,9 @@ cat > "$tmp/ffmpeg" <<'EOF'
 #!/usr/bin/env bash
 case "$2" in
 -hwaccels) printf 'Hardware acceleration methods:\nvaapi\ncuda\nd3d11va\ndxva2\nvideotoolbox\n' ;;
--decoders) printf ' V..... vp9\n V..... h264_cuvid\n V..... hevc_cuvid\n' ;;
--encoders) printf ' V..... libvpx-vp9\n A..... libopus\n V..... h264_nvenc\n V..... hevc_nvenc\n V..... h264_mf\n V..... h264_videotoolbox\n V..... hevc_videotoolbox\n A..... aac_at\n' ;;
--filters) printf ' ... scale_vaapi\n' ;;
+-decoders) printf ' VFS..D vp9\n V....D h264_cuvid\n V....D hevc_cuvid\n' ;;
+-encoders) printf ' V....D libvpx-vp9\n A..... libopus\n V....D h264_nvenc\n V....D hevc_nvenc\n V....D h264_mf\n V....D h264_videotoolbox\n V....D hevc_videotoolbox\n A....D aac_at\n' ;;
+-filters) printf ' ..C scale_vaapi\n' ;;
 esac
 EOF
 chmod +x "$tmp/ffmpeg"

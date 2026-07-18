@@ -5,9 +5,9 @@ while [[ $# -gt 0 ]]; do case "$1" in --target-id) target_id=$2; shift 2;; --ffm
 [[ -n "$target_id" && -n "$ffmpeg" ]]
 require() { local name=$1 inventory=$2; grep -Fqx -- "$name" <<<"$inventory" >/dev/null || { echo "missing required capability: $name" >&2; exit 1; }; }
 hwaccels=$("$ffmpeg" -hide_banner -hwaccels 2>&1 | awk 'seen { sub(/^[[:space:]]*/, ""); print } /Hardware acceleration methods:/ { seen = 1 }')
-decoders=$("$ffmpeg" -hide_banner -decoders 2>&1 | awk '/^[[:space:]]*[VASF\.]{6}[[:space:]]/ {print $2}')
-encoders=$("$ffmpeg" -hide_banner -encoders 2>&1 | awk '/^[[:space:]]*[VASF\.]{6}[[:space:]]/ {print $2}')
-filters=$("$ffmpeg" -hide_banner -filters 2>&1 | awk '/^[[:space:]]*[TSC\.]{3}[[:space:]]/ {print $2}')
+decoders=$("$ffmpeg" -hide_banner -decoders 2>&1 | awk '$1 ~ /^[A-Z.][A-Z.][A-Z.][A-Z.][A-Z.][A-Z.]$/ {print $2}')
+encoders=$("$ffmpeg" -hide_banner -encoders 2>&1 | awk '$1 ~ /^[A-Z.][A-Z.][A-Z.][A-Z.][A-Z.][A-Z.]$/ {print $2}')
+filters=$("$ffmpeg" -hide_banner -filters 2>&1 | awk '$1 ~ /^[A-Z.][A-Z.][A-Z.]$/ {print $2}')
 codec_inventory=$(printf '%s\n%s\n' "$decoders" "$encoders")
 require vp9 "$decoders"; require libvpx-vp9 "$encoders"; require libopus "$encoders"
 case "$target_id" in
