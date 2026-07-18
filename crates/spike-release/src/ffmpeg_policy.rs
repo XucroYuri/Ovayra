@@ -135,7 +135,7 @@ impl FfmpegBundle {
         validate_executables(root)
     }
 
-    /// Parses the `configuration:` record as shell-like tokens, rejecting ambiguous quoting.
+    /// Parses the `configuration:` record as shell-like tokens, including `FFmpeg`'s quoted values.
     ///
     /// # Errors
     ///
@@ -640,21 +640,29 @@ fn parse_tokens(input: &str) -> Result<Vec<String>, FfmpegPolicyError> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut quote = None;
+    let mut escaped = false;
     for character in input.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
         match (quote, character) {
             (Some(delimiter), character) if character == delimiter => quote = None,
-            (None, '\'' | '\"') if current.is_empty() => quote = Some(character),
+            (Some('\"') | None, '\\') => escaped = true,
+            (None, '\'' | '\"') => quote = Some(character),
             (None, character) if character.is_whitespace() => {
                 if !current.is_empty() {
                     tokens.push(std::mem::take(&mut current));
                 }
             }
-            (Some(_) | None, character) => current.push(character),
+            (Some('\'' | '\"') | None, character) => current.push(character),
+            (Some(_), _) => unreachable!("only single and double quote delimiters are assigned"),
         }
     }
-    if quote.is_some() || current.contains('\'') || current.contains('\"') {
+    if quote.is_some() || escaped {
         return Err(FfmpegPolicyError::InvalidBuildconf(
-            "unbalanced or embedded quoting".into(),
+            "unbalanced quoting or trailing escape".into(),
         ));
     }
     if !current.is_empty() {

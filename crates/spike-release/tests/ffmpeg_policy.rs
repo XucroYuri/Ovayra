@@ -35,7 +35,7 @@ fn rejects_duplicate_configure_tokens_to_prevent_ambiguous_effective_configurati
 #[test]
 fn accepts_the_official_multiline_buildconf_format_and_rejects_an_empty_record() {
     let multiline = format!(
-        "\n  configuration:\n    {}\n\nExiting with exit code 0\n",
+        "\n  configuration:\n    {}\n    --extra-cflags='-MD -ID:/a path/include'\n    --extra-libs=opus.lib\\ vpx.lib\n\nExiting with exit code 0\n",
         BUILD_CONF
             .trim_start_matches("configuration: ")
             .split_whitespace()
@@ -48,6 +48,14 @@ fn accepts_the_official_multiline_buildconf_format_and_rejects_an_empty_record()
         FfmpegBundle::validate_buildconf("\n  configuration:\n\nExiting with exit code 0\n")
             .unwrap_err();
     assert!(matches!(error, FfmpegPolicyError::InvalidBuildconf(_)));
+
+    for malformed in [
+        "configuration: --disable-gpl '--disable-nonfree",
+        "configuration: --disable-gpl --disable-nonfree\\",
+    ] {
+        let error = FfmpegBundle::validate_buildconf(malformed).unwrap_err();
+        assert!(matches!(error, FfmpegPolicyError::InvalidBuildconf(_)));
+    }
 }
 
 #[test]
