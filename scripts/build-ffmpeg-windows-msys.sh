@@ -50,7 +50,7 @@ cd "$source_root/nv-codec-headers"; "$make_cmd" PREFIX="$(cygpath -m "$dependenc
 test -f "$dependency_prefix/include/ffnvcodec/nvEncodeAPI.h"
 cd "$source_root/ffmpeg"
 prefix_win=$(cygpath -m "$dependency_prefix")
-configure=(--prefix="$(cygpath -m "$stage_root")" --toolchain=msvc --target-os=win32 --arch=x86_64 --disable-autodetect --disable-debug --disable-doc --disable-ffplay --disable-network --enable-ffmpeg --enable-ffprobe --enable-libopus --enable-libvpx --enable-version3 --disable-gpl --disable-nonfree --enable-d3d11va --enable-dxva2 --enable-mediafoundation --enable-nvenc --enable-nvdec --extra-cflags="-MD -I$prefix_win/include" --extra-ldflags="-LIBPATH:$prefix_win/lib" --extra-libs="opus.lib vpx.lib")
+configure=(--prefix="$(cygpath -m "$stage_root")" --toolchain=msvc --target-os=win32 --arch=x86_64 --disable-autodetect --disable-debug --disable-doc --disable-ffplay --disable-network --enable-ffmpeg --enable-ffprobe --enable-libopus --enable-libvpx --enable-version3 --disable-gpl --disable-nonfree --enable-d3d11va --enable-dxva2 --enable-mediafoundation --enable-ffnvcodec --enable-nvenc --enable-nvdec --extra-cflags="-MD -I$prefix_win/include" --extra-ldflags="-LIBPATH:$prefix_win/lib" --extra-libs="opus.lib vpx.lib")
 export PKG_CONFIG_PATH="$dependency_prefix/lib/pkgconfig"
 export PKG_CONFIG_LIBDIR="$PKG_CONFIG_PATH"
 if ! ./configure "${configure[@]}"; then
